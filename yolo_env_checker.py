@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-YOLO Environment Checker & Model Export Tool  v1.0.0
+YOLO Environment Checker & Model Export Tool  v1.1.0
 
 Overview:
     Step 1 in the two-tool pipeline.
@@ -15,10 +15,15 @@ What it does:
     - Detects PyTorch, CUDA, MPS (Apple Metal), XPU (Intel)
     - Tests actual precision support (FP32/FP16/BF16/INT8/INT4/FP8) per device
     - Detects inference frameworks: TensorRT, CoreML, OpenVINO
-    - Provides an interactive menu to select format, model, and precision
+    - Provides an interactive menu to select task, model size, format, and precision
     - Exports the chosen model with the recommended parameters
 
-ISA detection scope (v1.0.0):
+Supported tasks (v1.1.0):
+    Detection / Tracking  — yolo26n/s/m/l/x.pt
+    Pose Estimation       — yolo26n/s/m/l/x-pose.pt
+    Segmentation          — yolo26n/s/m/l/x-seg.pt
+
+ISA detection scope:
     Kept  : FMA3, AVX, AVX2, AVX512 family, AMX (meaningful AI throughput delta)
     Removed: SSE2/SSE3/SSE4.x (universal on modern CPUs, no filtering value)
 
@@ -1339,29 +1344,67 @@ class YOLOEnvChecker:
                 print('\n\nCancelled'); sys.exit(0)
 
     def select_model(self) -> str:
-        self.print_header('🎯 Select Model')
-        models = {
-            '1': ('yolo26n.pt', 'Nano   — fastest'),
-            '2': ('yolo26s.pt', 'Small  — speed / accuracy balance'),
-            '3': ('yolo26m.pt', 'Medium — better accuracy'),
-            '4': ('yolo26l.pt', 'Large  — high accuracy'),
-            '5': ('yolo26x.pt', 'XLarge — highest accuracy'),
+        """
+        Two-level interactive menu:
+          Level 1 — choose the YOLO task (Detection / Pose / Segmentation)
+          Level 2 — choose the model size (Nano → XLarge)
+        Returns the composed model filename, e.g. 'yolo26s-pose.pt'.
+        The user may also type a custom filename at the size prompt to skip
+        the automatic composition logic entirely.
+        """
+        self.print_header('🎯 Select Task & Model')
+
+        # ── Level 1: task ───────────────────────────────────────────────────
+        tasks = {
+            '1': ('',      'Detection / Tracking',
+                  'Detect and track objects in video  (yolo26?.pt)'),
+            '2': ('-pose', 'Pose Estimation',
+                  'Detect people and estimate 17-keypoint body pose  (yolo26?-pose.pt)'),
+            '3': ('-seg',  'Segmentation',
+                  'Detect objects and produce per-pixel instance masks  (yolo26?-seg.pt)'),
         }
-        print('YOLO26 models:\n')
-        for k, (n, d) in models.items():
-            print(f'  [{k}] {n:<15} {d}')
+        print('Step 1 — Select task:\n')
+        for k, (_, name, desc) in tasks.items():
+            print(f'  [{k}] {name}\n      {desc}\n')
+
         while True:
             try:
-                choice = input('\nSelect model (1-5) or enter model name directly [1]: ').strip()
-                if not choice: choice = '1'
-                if choice in models:
-                    m = models[choice][0]
-                    print(f'✅ Selected: {m}')
-                    return m
-                if not choice.endswith('.pt'):
-                    choice += '.pt'
-                print(f'✅ Selected: {choice}')
-                return choice
+                t_choice = input('Select task (1-3) [1]: ').strip() or '1'
+                if t_choice in tasks:
+                    task_suffix, task_name, _ = tasks[t_choice]
+                    print(f'\n✅ Task: {task_name}')
+                    break
+                print('❌ Please enter 1, 2, or 3')
+            except KeyboardInterrupt:
+                print('\n\nCancelled'); sys.exit(0)
+
+        # ── Level 2: size ───────────────────────────────────────────────────
+        sizes = {
+            '1': ('n', 'Nano   — fastest, lowest accuracy'),
+            '2': ('s', 'Small  — speed / accuracy balance'),
+            '3': ('m', 'Medium — better accuracy'),
+            '4': ('l', 'Large  — high accuracy'),
+            '5': ('x', 'XLarge — highest accuracy'),
+        }
+        print(f'\nStep 2 — Select model size:\n')
+        for k, (sz, desc) in sizes.items():
+            name = f'yolo26{sz}{task_suffix}.pt'
+            print(f'  [{k}] {name:<22} {desc}')
+
+        print('\n  Or type a custom model filename directly.')
+        while True:
+            try:
+                s_choice = input('\nSelect size (1-5) or filename [2]: ').strip() or '2'
+                if s_choice in sizes:
+                    sz = sizes[s_choice][0]
+                    model = f'yolo26{sz}{task_suffix}.pt'
+                    print(f'✅ Selected: {model}')
+                    return model
+                # Custom filename
+                if not s_choice.endswith('.pt'):
+                    s_choice += '.pt'
+                print(f'✅ Selected: {s_choice}')
+                return s_choice
             except KeyboardInterrupt:
                 print('\n\nCancelled'); sys.exit(0)
 
@@ -1488,7 +1531,7 @@ class YOLOEnvChecker:
 
     def run(self):
         print('\n' + '='*70)
-        print('  🔥 YOLO Environment Checker & Model Export Tool  v1.0.0')
+        print('  🔥 YOLO Environment Checker & Model Export Tool  v1.1.0')
         print('='*70)
         self.detect_all()
         self.show_environment()

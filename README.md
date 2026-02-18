@@ -1,9 +1,18 @@
-# YOLO Environment Checker & HTTP Tracker  v1.0.0
+# YOLO Environment Checker & HTTP Tracker  v1.1.0
 
-A two-tool pipeline for deploying YOLO object detection/tracking on any hardware:
+A two-tool pipeline for deploying YOLO object detection, pose estimation, and
+segmentation on any hardware:
 
 1. **`yolo_env_checker.py`** — Scan your environment, pick the optimal export format, and export the model.
 2. **`yolo_http_tracker.py`** — Load the exported model and stream live annotated video over HTTP (MJPEG).
+
+Supported tasks (v1.1.0):
+
+| Task | Model suffix | What you see |
+|---|---|---|
+| Detection / Tracking | `yolo26?.pt` | Corner-box + label + trajectory trails |
+| Pose Estimation | `yolo26?-pose.pt` | 17-keypoint COCO skeleton, colour-coded by limb zone |
+| Segmentation | `yolo26?-seg.pt` | Semi-transparent per-instance colour masks + corner-box |
 
 ---
 
@@ -16,6 +25,7 @@ A two-tool pipeline for deploying YOLO object detection/tracking on any hardware
 - [Quick Start](#quick-start)
 - [Tool 1 — Environment Checker & Exporter](#tool-1--environment-checker--exporter)
 - [Tool 2 — HTTP Tracker](#tool-2--http-tracker)
+- [Supported Tasks](#supported-tasks)
 - [Supported Model Formats](#supported-model-formats)
 - [Precision Reference](#precision-reference)
 - [Pros & Cons](#pros--cons)
@@ -81,11 +91,15 @@ python yolo_http_tracker.py \
 | Feature | Detail |
 |---|---|
 | Model-driven backend | Backend inferred from file extension; no manual flag needed |
+| Model-driven task | Task inferred from filename suffix (`-pose`, `-seg`); confirmed from `model.task` after load |
+| Detection / Tracking | Corner-box overlay, label, confidence %, optional trajectory trails |
+| Pose Estimation | COCO 17-keypoint skeleton; colour-coded zones (face / arms / legs); low-confidence keypoints skipped |
+| Segmentation | Semi-transparent per-instance colour masks (20-colour palette by class); contour outline; corner-box + label on top |
 | Multi-client MJPEG | Unlimited simultaneous browser/VLC viewers |
-| HTML viewer | Auto-refresh stats panel (FPS, inference ms, drop rate, clients) |
+| HTML viewer | Auto-refresh stats panel (Task, FPS, inference ms, drop rate, clients) |
 | JSON stats endpoint | `GET /stats` — suitable for external dashboards |
 | Corner-box overlay | Cleaner than full rectangles; less frame occlusion |
-| Trajectory trails | Fading per-object paths (`--trajectory`) |
+| Trajectory trails | Fading per-object paths (`--trajectory`) — works across all tasks |
 | Tracking ID labels | Show `#id class conf%` overlays (`--show-id`) |
 | Independent JPEG encoder | Dedicated thread — encoding never blocks inference |
 | Active frame dropping | Stale frames discarded before inference; drop counter tracked |
@@ -235,8 +249,9 @@ python yolo_env_checker.py
 
 The script will:
 1. Print a full environment report (CPU, GPU, precision matrix, frameworks)
-2. Ask you to select an export format, model size, and precision
-3. Export the model and print the usage snippet
+2. Ask you to select a **task** (Detection / Pose / Segmentation)
+3. Ask you to select model size and export format / precision
+4. Export the model and print the usage snippet
 
 > **PyTorch format — no export needed:**  
 > If you select a **PyTorch** format in the menu (PyTorch CUDA / MPS / XPU / CPU),
@@ -249,24 +264,32 @@ The script will:
 > python yolo_http_tracker.py --input 0 --model yolo26s.pt
 > ```
 
-### Step 2 — Stream from a webcam
+### Step 2 — Detection / Tracking (webcam)
 
 ```bash
-python yolo_http_tracker.py --input 0 --model yolo26s.pt
+python yolo_http_tracker.py --input 0 --model yolo26s.pt --show-id --trajectory
 ```
 
-### Step 2 — Stream from an IP camera (with exported engine)
+### Step 2 — Pose Estimation (IP camera)
 
 ```bash
 python yolo_http_tracker.py \
     --input rtsp://admin:pass@192.168.1.100/stream \
-    --model yolo26s_fp16.engine \
-    --conf 0.35 \
-    --show-id \
-    --trajectory
+    --model yolo26s-pose.pt \
+    --show-id --trajectory
 ```
 
-Open **http://localhost:8000** in any browser or VLC.
+### Step 2 — Segmentation (exported engine)
+
+```bash
+python yolo_http_tracker.py \
+    --input rtsp://admin:pass@192.168.1.100/stream \
+    --model yolo26s-seg_fp16.engine \
+    --conf 0.35
+```
+
+Open **http://localhost:8000** in any browser or VLC.  
+The **Task** field in the info overlay confirms which mode is active.
 
 ---
 
@@ -281,7 +304,7 @@ python yolo_env_checker.py
 ### Output sections
 
 ```
-🔥 YOLO Environment Checker & Model Export Tool  v1.0.0
+🔥 YOLO Environment Checker & Model Export Tool  v1.1.0
   📦 Ultralytics
   📋 System Information
   🧮 CPU Information
@@ -294,6 +317,29 @@ python yolo_env_checker.py
   🩺 Smart Diagnostics & Recommendations
 ```
 
+### Interactive menu flow (v1.1.0)
+
+```
+Step 1 — Select task
+  [1] Detection / Tracking     yolo26?.pt
+  [2] Pose Estimation          yolo26?-pose.pt
+  [3] Segmentation             yolo26?-seg.pt
+
+Step 2 — Select model size
+  [1] Nano   [2] Small   [3] Medium   [4] Large   [5] XLarge
+  (or type a custom filename directly)
+
+Step 3 — Select export format
+  PyTorch (CUDA / MPS / XPU / CPU) | TensorRT | CoreML | OpenVINO | ONNX
+
+Step 4 — Select precision
+  FP32 | FP16 ⭐ | INT8
+```
+
+The composed model filename (e.g. `yolo26s-pose.pt`) is passed automatically
+to the export step. All three task types export with identical parameters;
+the task is encoded in the model weights, not the export flags.
+
 ### PyTorch format — no export file produced
 
 When you select a **PyTorch** format (CUDA / MPS / XPU / CPU), the tool prints
@@ -304,8 +350,8 @@ If the `.pt` file does not exist on disk, Ultralytics downloads it automatically
 when `yolo_http_tracker.py` starts:
 
 ```bash
-# yolo26s.pt will be downloaded on first run if not present locally
-python yolo_http_tracker.py --input 0 --model yolo26s.pt
+# yolo26s-pose.pt will be downloaded on first run if not present locally
+python yolo_http_tracker.py --input 0 --model yolo26s-pose.pt
 ```
 
 ### Customising export parameters
@@ -355,6 +401,57 @@ python yolo_http_tracker.py --input <source> --model <model_path> [options]
 | `/` | HTML | Browser viewer with live stats |
 | `/stream` | MJPEG | Direct stream (VLC, ffplay, img tag) |
 | `/stats` | JSON | Performance metrics for dashboards |
+
+---
+
+## Supported Tasks
+
+Task is detected automatically from the model filename and confirmed from
+`model.task` after loading. No `--task` flag is needed.
+
+| Task | Model filename pattern | Detection source |
+|---|---|---|
+| Detection / Tracking | `yolo26?.pt`, `yolo26?.engine`, etc. | default |
+| Pose Estimation | `*-pose*` in filename | `-pose` suffix |
+| Segmentation | `*-seg*` in filename | `-seg` suffix |
+
+### Detection / Tracking
+
+Standard YOLO object detection with multi-object tracking (BotSort / ByteTrack).
+
+- Corner-box style bounding boxes (less occlusion than full rectangles)
+- Semi-transparent label with class name, confidence, and optional track ID
+- Optional fading trajectory trails per tracked object (`--trajectory`)
+- Class filter via `--classes person car` etc.
+
+### Pose Estimation
+
+Detects people and estimates 17 COCO body keypoints per person.
+
+- Skeleton limbs drawn with colour-coded body zones:
+  - **Yellow** — face connections
+  - **Cyan** — left arm (shoulder → elbow → wrist)
+  - **Red/Pink** — right arm
+  - **Grey** — torso (shoulder–hip connections, hip bar)
+  - **Green** — left leg
+  - **Blue** — right leg
+- Keypoints with confidence < 0.3 are skipped (no phantom limbs)
+- Bounding box and label drawn on top of the skeleton
+- Trajectory trails supported via track ID (`--trajectory`)
+
+> **Note:** Pose models only detect the `person` class.  
+> `--classes` filtering is not applicable.
+
+### Segmentation
+
+Produces per-pixel instance masks for each detected object.
+
+- 20-colour palette cycling by class ID (consistent colours across frames)
+- Masks rendered at 40 % opacity so the scene remains visible
+- Contour outline drawn at full opacity for a crisp edge
+- Corner-box and label drawn on top of the mask
+- All 80 COCO classes supported (or custom classes from your trained model)
+- Trajectory trails supported via track ID (`--trajectory`)
 
 ---
 
@@ -471,18 +568,26 @@ python yolo_http_tracker.py --model yolo26s_fp16_openvino_model --device intel:g
 ## Project Structure
 
 ```
-yolo-env-tracker/
-├── yolo_env_checker.py     # Step 1: environment check + model export
-├── yolo_http_tracker.py    # Step 2: live HTTP streaming tracker
-└── README.md
+yolo-export-and-stream/
+├── yolo_env_checker.py     # Step 1: environment check + model export (v1.1.0)
+├── yolo_http_tracker.py    # Step 2: live HTTP streaming tracker  (v1.1.0)
+├── README.md  
+└── README.zh.md  
 ```
 
 ---
 
 ## License
 
-The scripts in this repository (`yolo_env_checker.py`, `yolo_http_tracker.py`)
-are released under the **GNU Affero General Public License v3.0 (AGPLv3)**
+The scripts in this project（`yolo_env_checker.py`、`yolo_http_tracker.py`） are released under the **GNU Affero General Public License v3.0 (AGPLv3)**.
+
+Under the AGPLv3, you are free to use, modify, and distribute this software, subject to the following conditions:
+
+* If you modify this software and provide it as a service over a network (e.g., running it as SaaS or exposing public HTTP endpoints), you **must** make your modified source code available under the AGPLv3.
+* You must include the original license statement and copyright notice when distributing.
+* Derivative works must be licensed under the same terms.
+
+Full license terms: [License](./LICENSE)  
 
 ---
 

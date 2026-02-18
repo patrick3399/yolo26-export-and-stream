@@ -1,19 +1,30 @@
 #!/usr/bin/env python3
 """
-YOLO HTTP-MJPEG Tracker  v1.0.0  (Model-Driven Backend Edition)
+YOLO HTTP-MJPEG Tracker  v1.1.0  (Model-Driven Backend + Full-Task Edition)
 
 Overview:
     Step 2 in the two-tool pipeline.
     Takes a YOLO model exported by yolo_env_checker.py (or any supported
     format) and streams annotated video over HTTP as an MJPEG feed.
+    Supports all three YOLO task types automatically:
+        Detection / Tracking  — corner-box overlay + trajectory trails
+        Pose Estimation       — 17-keypoint skeleton with colour-coded limbs
+        Segmentation          — per-instance colour masks + corner-box overlay
 
-Backend selection:
+Backend selection (unchanged from v1.0.0):
     The inference backend is determined automatically from the model path:
         *.pt / *.pth / *.yaml   → PyTorch  (Ultralytics auto-device)
         *.engine                → TensorRT (CUDA required)
         *_openvino_model/       → OpenVINO (folder)
         *.mlpackage / *.mlmodel → CoreML   (macOS only)
         *.onnx                  → ONNX Runtime
+
+Task detection (v1.1.0):
+    Task is inferred from the model filename suffix, then confirmed from
+    the loaded model's own .task attribute:
+        filename contains '-pose'   → pose
+        filename contains '-seg'    → segment
+        otherwise                   → detect
 
 Device selection:
     --device is forwarded verbatim to Ultralytics; no pre-validation is
@@ -34,6 +45,8 @@ Features:
     - AJAX stats panel (FPS, inference time, dropped frames, client count)
     - Per-object trajectory trails (--trajectory)
     - Corner-box overlay style (less cluttered than full rectangles)
+    - Pose: COCO 17-keypoint skeleton with colour-coded face/arm/leg zones
+    - Segmentation: semi-transparent per-instance colour masks
     - Independent JPEG encoder thread (decouples CPU from inference thread)
     - Active frame-drop counter (stale frames are discarded before inference)
     - OS-aware RTSP backend selection (FFMPEG / MSMF / DSHOW / GStreamer / V4L2)
@@ -125,6 +138,81 @@ def infer_precision(fmt: str) -> str:
     }.get(fmt, "auto")
 
 
+def detect_model_task(model_path: str) -> str:
+    """
+    Infer the YOLO task from the model filename.
+
+    Looks for well-known suffixes in the stem (before the extension):
+        contains '-pose'  → 'pose'
+        contains '-seg'   → 'segment'
+        otherwise         → 'detect'
+
+    After the model is loaded, the caller should also check
+    model.task and override this value if they differ.
+    """
+    stem = str(model_path).lower()
+    if '-pose' in stem:
+        return 'pose'
+    if '-seg' in stem:
+        return 'segment'
+    return 'detect'
+
+
+def task_display_name(task: str) -> str:
+    """Return a short human-readable task label for the info overlay."""
+    return {
+        'detect':  'Detection / Tracking',
+        'pose':    'Pose Estimation',
+        'segment': 'Segmentation',
+    }.get(task, task)
+
+
+# ── COCO 17-keypoint skeleton definition ─────────────────────────────────────
+# Each tuple is (keypoint_index_A, keypoint_index_B, BGR_colour).
+# Keypoint order: 0=nose 1=left_eye 2=right_eye 3=left_ear 4=right_ear
+#                 5=left_shoulder 6=right_shoulder 7=left_elbow 8=right_elbow
+#                 9=left_wrist 10=right_wrist 11=left_hip 12=right_hip
+#                13=left_knee 14=right_knee 15=left_ankle 16=right_ankle
+POSE_SKELETON = [
+    # Face
+    (0, 1,  (255, 220,  50)),
+    (0, 2,  (255, 220,  50)),
+    (1, 3,  (255, 220,  50)),
+    (2, 4,  (255, 220,  50)),
+    # Shoulder bar
+    (5, 6,  (0, 200, 255)),
+    # Left arm
+    (5, 7,  (0, 200, 255)),
+    (7, 9,  (0, 200, 255)),
+    # Right arm
+    (6, 8,  (255, 100, 100)),
+    (8, 10, (255, 100, 100)),
+    # Torso
+    (5, 11, (180, 180, 180)),
+    (6, 12, (180, 180, 180)),
+    # Hip bar
+    (11, 12, (180, 180, 180)),
+    # Left leg
+    (11, 13, (100, 255, 100)),
+    (13, 15, (100, 255, 100)),
+    # Right leg
+    (12, 14, (50, 180, 255)),
+    (14, 16, (50, 180, 255)),
+]
+
+# Keypoint confidence threshold — points below this are not drawn
+POSE_KP_CONF = 0.3
+
+# ── Segmentation mask colour palette (BGR, 20 distinct colours cycling by class)
+SEG_PALETTE = [
+    (  0, 200, 255), (  0, 255, 100), (255, 100,  50), (200,   0, 255),
+    (255, 220,   0), ( 50, 255, 200), (255,  50, 200), (  0, 150, 255),
+    (100, 255,  50), (255, 150,   0), (  0, 255, 200), (150,  50, 255),
+    (255,   0, 100), ( 50, 200, 100), (200, 255,   0), (  0, 100, 200),
+    (255, 200, 100), (100,   0, 255), (  0, 255,  50), (200, 100, 255),
+]
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Performance monitor
 # ────────────────────────────────────────────────────────────────────────────
@@ -207,7 +295,7 @@ class PerformanceMonitor:
     def print_report(self):
         s = self.get_stats()
         print("\n" + "=" * 70)
-        print("📊 PERFORMANCE REPORT (v1.0.0 Model-Driven Backend)")
+        print("📊 PERFORMANCE REPORT (v1.1.0 Full-Task Edition)")
         print("=" * 70)
         print(f"Current FPS : {s['fps']:.1f}")
         print(f"Clients     : {s['client_count']}")
@@ -380,7 +468,7 @@ class StreamingHandler(BaseHTTPRequestHandler):
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>YOLO Tracker v1.0.0</title>
+  <title>YOLO Tracker v1.1.0</title>
   <style>
     body {{ margin:0; background:#000; color:#fff; font-family:Arial,sans-serif; }}
     .info {{
@@ -390,6 +478,7 @@ class StreamingHandler(BaseHTTPRequestHandler):
     }}
     .fps {{ color:#00ff88; font-weight:bold; }}
     .fmt {{ color:#7dd3fc; }}
+    .task {{ color:#fbbf24; }}
   </style>
   <script>
     function refresh() {{
@@ -408,6 +497,7 @@ class StreamingHandler(BaseHTTPRequestHandler):
   <img src="/stream" style="display:block;margin:0 auto;max-width:100%;height:auto;">
   <div class="info">
     <div><b>Model:</b> <span class="fmt">{tracker.model_name}</span></div>
+    <div><b>Task:</b> <span class="task">{tracker.task_label}</span></div>
     <div><b>Backend:</b> <span class="fmt">{tracker.format_display}</span></div>
     <div><b>Precision:</b> {tracker.precision_label}</div>
     <div><b>Device:</b> {tracker.device_label}</div>
@@ -478,10 +568,16 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 
 class YOLOTracker:
     """
-    YOLO HTTP-MJPEG Tracker  v1.0.0
+    YOLO HTTP-MJPEG Tracker  v1.1.0
 
-    Combines model-format detection, RTSP/webcam reading, YOLO tracking,
-    and HTTP serving into a single pipeline.
+    Combines model-format detection, task detection, RTSP/webcam reading,
+    YOLO inference, annotation, and HTTP serving into a single pipeline.
+
+    Task detection:
+        Inferred from model filename suffix; confirmed from model.task after load.
+        'detect'  → corner-box + labels + optional trajectories
+        'pose'    → COCO 17-keypoint skeleton overlay
+        'segment' → semi-transparent colour masks + corner-box + labels
 
     Device resolution:
         1. Detect backend from model path (detect_model_format()).
@@ -514,6 +610,10 @@ class YOLOTracker:
         self.model_format    = detect_model_format(self.model_name)
         self.format_display  = format_display_name(self.model_format)
         self.precision_label = infer_precision(self.model_format)
+
+        # ── Detect model task (confirmed after load) ─────────────────────────
+        self.model_task  = detect_model_task(self.model_name)
+        self.task_label  = task_display_name(self.model_task)
 
         # ── Resolve inference device kwarg ───────────────────────────────────
         user_device = args.device.strip()
@@ -556,7 +656,7 @@ class YOLOTracker:
     # ──────────────────────────────────────────────────────────────────────────
     def _print_diagnostic(self):
         print("\n" + "=" * 70)
-        print("🔍 SYSTEM DIAGNOSTIC (v1.0.0 Model-Driven Backend)")
+        print("🔍 SYSTEM DIAGNOSTIC (v1.1.0 Model-Driven Backend + Full-Task)")
         print("=" * 70)
         print(f"Python     : {sys.version.split()[0]}")
         print(f"PyTorch    : {torch.__version__}")
@@ -567,6 +667,7 @@ class YOLOTracker:
         print(f"Platform   : {platform.system()} {platform.machine()}")
         print("-" * 70)
         print(f"Model      : {self.model_name}")
+        print(f"Task       : {self.task_label}")
         print(f"Format     : {self.format_display}")
         print(f"Device     : {self.device_label}")
         print(f"Precision  : {self.precision_label}")
@@ -581,10 +682,24 @@ class YOLOTracker:
 
     # ──────────────────────────────────────────────────────────────────────────
     def _load_model(self):
-        """Load the YOLO model and run a lightweight warm-up pass."""
+        """
+        Load the YOLO model and run a lightweight warm-up pass.
+        After loading, the model's own .task attribute is used to confirm
+        (or correct) the task inferred from the filename.
+        """
         print(f"📦 Loading model: {self.model_name}  [{self.format_display}]")
 
         self.model = YOLO(self.model_name)
+
+        # Confirm task from the loaded model (more reliable than filename)
+        model_reported_task = getattr(self.model, 'task', None)
+        if model_reported_task and model_reported_task != self.model_task:
+            print(f"   ℹ Task corrected by model metadata: "
+                  f"'{self.model_task}' → '{model_reported_task}'")
+            self.model_task = model_reported_task
+            self.task_label = task_display_name(self.model_task)
+
+        print(f"   Task: {self.task_label}")
 
         # Build class-name index for filtering
         self.class_names = self.model.names
@@ -680,7 +795,7 @@ class YOLOTracker:
         cv2.circle(img, tuple(map(int, center)), 4, (0, 255, 0), -1)
 
     def _draw_detections(self, img, results) -> int:
-        """Annotate the frame with boxes, labels, and optional trajectories."""
+        """Annotate the frame with corner-boxes, labels, and optional trajectories."""
         if not results or not results[0].boxes:
             return 0
         num = 0
@@ -713,10 +828,165 @@ class YOLOTracker:
         return num
 
     # ──────────────────────────────────────────────────────────────────────────
+    def _draw_pose(self, img, results) -> int:
+        """
+        Draw COCO 17-keypoint pose skeletons on the frame.
+
+        For each detected person:
+          1. Draw skeleton limb connections (colour-coded by body zone).
+          2. Draw a filled circle at each visible keypoint.
+          3. Draw the bounding box and label (same style as detection).
+
+        Keypoints below POSE_KP_CONF confidence are skipped entirely so that
+        partially-visible people do not produce phantom limbs.
+        """
+        if not results or not results[0].keypoints:
+            return 0
+
+        r      = results[0]
+        kps    = r.keypoints          # shape: (N, 17, 3)  x, y, conf
+        boxes  = r.boxes if r.boxes is not None else []
+        num    = 0
+
+        for person_idx in range(len(kps)):
+            kp_data = kps[person_idx].data[0].cpu().numpy()  # (17, 3)
+
+            # ── Draw skeleton limbs ─────────────────────────────────────────
+            for (a, b, color) in POSE_SKELETON:
+                if kp_data[a][2] < POSE_KP_CONF or kp_data[b][2] < POSE_KP_CONF:
+                    continue   # skip low-confidence connections
+                pt_a = (int(kp_data[a][0]), int(kp_data[a][1]))
+                pt_b = (int(kp_data[b][0]), int(kp_data[b][1]))
+                cv2.line(img, pt_a, pt_b, color, 2, cv2.LINE_AA)
+
+            # ── Draw keypoint circles ───────────────────────────────────────
+            for kp_idx, (x, y, conf) in enumerate(kp_data):
+                if conf < POSE_KP_CONF:
+                    continue
+                # Face keypoints slightly smaller; body larger
+                radius = 3 if kp_idx < 5 else 5
+                cv2.circle(img, (int(x), int(y)), radius, (255, 255, 255), -1, cv2.LINE_AA)
+                cv2.circle(img, (int(x), int(y)), radius, (0, 0, 0),       1,  cv2.LINE_AA)
+
+            # ── Draw bounding box and label ─────────────────────────────────
+            if person_idx < len(boxes):
+                bx = boxes[person_idx]
+                conf_val = float(bx.conf[0])
+                x1, y1, x2, y2 = map(int, bx.xyxy[0].cpu().numpy())
+                label = (
+                    f"#{int(bx.id[0])} person {int(conf_val*100)}%"
+                    if self.show_id and bx.id is not None
+                    else f"person {int(conf_val*100)}%"
+                )
+                if self.trajectory and bx.id is not None:
+                    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+                    self._draw_trajectory(img, int(bx.id[0]), (cx, cy))
+
+                self._draw_corner_box(img, x1, y1, x2, y2,
+                                      color=(255, 220, 50), thickness=2)
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                scale, thick = 0.7, 2
+                (tw, th), _ = cv2.getTextSize(label, font, scale, thick)
+                overlay = img.copy()
+                cv2.rectangle(overlay, (x1, y1 - th - 10), (x1 + tw + 10, y1),
+                              (255, 220, 50), -1)
+                cv2.addWeighted(overlay, 0.6, img, 0.4, 0, img)
+                cv2.putText(img, label, (x1 + 5, y1 - 5),
+                            font, scale, (0, 0, 0), thick, cv2.LINE_AA)
+            num += 1
+        return num
+
+    # ──────────────────────────────────────────────────────────────────────────
+    def _draw_masks(self, img, results) -> int:
+        """
+        Draw semi-transparent instance segmentation masks on the frame.
+
+        For each detected instance:
+          1. Retrieve the binary mask (already rescaled to input resolution
+             by Ultralytics) and resize it to the original frame dimensions.
+          2. Flood-fill the mask region with a per-class colour at 40 % opacity.
+          3. Draw the mask contour outline for a sharper edge.
+          4. Draw the corner-box and label on top (same as detection).
+
+        Mask colours cycle through SEG_PALETTE by class_id so that objects
+        of the same class always share a colour across frames.
+        """
+        if not results or not results[0].masks:
+            return 0
+
+        r      = results[0]
+        masks  = r.masks       # Ultralytics Masks object
+        boxes  = r.boxes
+        h, w   = img.shape[:2]
+        num    = 0
+
+        # Build a composite overlay; blend once at the end for efficiency
+        overlay = img.copy()
+
+        for i, mask_obj in enumerate(masks):
+            # masks.data is (N, mH, mW) as a float tensor in [0, 1]
+            mask_np = mask_obj.data[0].cpu().numpy()
+            # Resize mask to frame resolution
+            mask_bin = cv2.resize(mask_np, (w, h),
+                                  interpolation=cv2.INTER_LINEAR) > 0.5
+
+            cls_id = int(boxes[i].cls[0]) if boxes is not None else i
+            color  = SEG_PALETTE[cls_id % len(SEG_PALETTE)]
+
+            overlay[mask_bin] = color
+
+            # Draw contour outline for a crisp edge
+            contours, _ = cv2.findContours(
+                mask_bin.astype(np.uint8),
+                cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+            cv2.drawContours(img, contours, -1, color, 2)
+
+        # Blend the filled overlay with the original frame at 40 % opacity
+        cv2.addWeighted(overlay, 0.4, img, 0.6, 0, img)
+
+        # Draw boxes and labels on top of the blended masks
+        if boxes is not None:
+            for b in boxes:
+                cls_id  = int(b.cls[0])
+                conf    = float(b.conf[0])
+                x1, y1, x2, y2 = map(int, b.xyxy[0].cpu().numpy())
+                color   = SEG_PALETTE[cls_id % len(SEG_PALETTE)]
+                label   = (
+                    f"#{int(b.id[0])} {self.class_names[cls_id]} {int(conf*100)}%"
+                    if self.show_id and b.id is not None
+                    else f"{self.class_names[cls_id]} {int(conf*100)}%"
+                )
+                if self.trajectory and b.id is not None:
+                    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+                    self._draw_trajectory(img, int(b.id[0]), (cx, cy))
+
+                self._draw_corner_box(img, x1, y1, x2, y2,
+                                      color=color, thickness=2)
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                scale, thick = 0.75, 2
+                (tw, th), _ = cv2.getTextSize(label, font, scale, thick)
+                lbl_overlay = img.copy()
+                cv2.rectangle(lbl_overlay, (x1, y1 - th - 10),
+                              (x1 + tw + 10, y1), color, -1)
+                cv2.addWeighted(lbl_overlay, 0.65, img, 0.35, 0, img)
+                cv2.putText(img, label, (x1 + 5, y1 - 5),
+                            font, scale, (255, 255, 255), thick, cv2.LINE_AA)
+                num += 1
+        return num
+
+    # ──────────────────────────────────────────────────────────────────────────
     def process_loop(self):
-        """Main inference loop: read → infer → draw → update shared JPEG."""
+        """
+        Main inference loop: read → infer → draw (task-specific) → update JPEG.
+
+        Drawing is dispatched by self.model_task:
+            'detect'  → _draw_detections()
+            'pose'    → _draw_pose()
+            'segment' → _draw_masks()  (includes box/label overlay)
+        """
         print("\n" + "=" * 70)
-        print("✔ YOLO processing started  (v1.0.0 Model-Driven Backend)")
+        print(f"✔ YOLO processing started  [{self.task_label}]  (v1.1.0)")
         print("=" * 70)
         print("Press Ctrl+C to stop and view performance report\n")
 
@@ -768,10 +1038,18 @@ class YOLOTracker:
                 print(f"⚠ Inference error: {e}")
                 continue
 
-            # ── Draw annotations ───────────────────────────────────────────
-            draw_t0  = time.time()
+            # ── Draw annotations (task-specific) ──────────────────────────
+            draw_t0   = time.time()
             annotated = frame.copy()
-            num_obj  = self._draw_detections(annotated, last_results)
+
+            if self.model_task == 'pose':
+                num_obj = self._draw_pose(annotated, last_results)
+            elif self.model_task == 'segment':
+                num_obj = self._draw_masks(annotated, last_results)
+            else:
+                # Default: detection / tracking
+                num_obj = self._draw_detections(annotated, last_results)
+
             self.monitor.record("draw", (time.time() - draw_t0) * 1000.0)
 
             with self.frame_lock:
