@@ -227,7 +227,7 @@ sudo sh cuda_13.1.1_590.48.01_linux.run
 
 ## Quick Start
 
-### Check environment and export a model
+### Step 1 — Check environment (and optionally export)
 
 ```bash
 python yolo_env_checker.py
@@ -238,13 +238,24 @@ The script will:
 2. Ask you to select an export format, model size, and precision
 3. Export the model and print the usage snippet
 
-### Stream from a webcam
+> **PyTorch format — no export needed:**  
+> If you select a **PyTorch** format in the menu (PyTorch CUDA / MPS / XPU / CPU),
+> no file is exported. Simply pass the `.pt` model name directly to
+> `yolo_http_tracker.py`. If the file does not exist locally, **Ultralytics will
+> download it automatically** on first run.
+>
+> ```bash
+> # No prior export step required — Ultralytics downloads yolo26s.pt if missing
+> python yolo_http_tracker.py --input 0 --model yolo26s.pt
+> ```
+
+### Step 2 — Stream from a webcam
 
 ```bash
 python yolo_http_tracker.py --input 0 --model yolo26s.pt
 ```
 
-### Stream from an IP camera
+### Step 2 — Stream from an IP camera (with exported engine)
 
 ```bash
 python yolo_http_tracker.py \
@@ -281,6 +292,20 @@ python yolo_env_checker.py
   📊 Precision Support Matrix
   🚀 Inference Acceleration Frameworks
   🩺 Smart Diagnostics & Recommendations
+```
+
+### PyTorch format — no export file produced
+
+When you select a **PyTorch** format (CUDA / MPS / XPU / CPU), the tool prints
+a usage snippet and exits without writing any file. This is intentional —
+PyTorch models are loaded directly from `.pt` weights by Ultralytics.
+
+If the `.pt` file does not exist on disk, Ultralytics downloads it automatically
+when `yolo_http_tracker.py` starts:
+
+```bash
+# yolo26s.pt will be downloaded on first run if not present locally
+python yolo_http_tracker.py --input 0 --model yolo26s.pt
 ```
 
 ### Customising export parameters
@@ -456,4 +481,24 @@ yolo-env-tracker/
 
 ## License
 
-MIT License — free to use, modify, and distribute.
+The scripts in this repository (`yolo_env_checker.py`, `yolo_http_tracker.py`)
+are released under the **MIT License** — free to use, modify, and distribute.
+
+---
+
+## Third-Party Notices
+
+### Ultralytics & YOLO26
+
+> © 2026 Ultralytics Inc. All rights reserved.
+
+This project depends on the [Ultralytics](https://github.com/ultralytics/ultralytics)
+library and uses YOLO26 model weights, both of which are the intellectual
+property of Ultralytics Inc. and are subject to their own license terms.
+
+- Ultralytics license: https://github.com/ultralytics/ultralytics/blob/main/LICENSE
+- Commercial use of Ultralytics models may require a separate license.  
+  See https://www.ultralytics.com/license for details.
+
+This project is an independent tool that interfaces with the Ultralytics API.
+It is not affiliated with, endorsed by, or officially supported by Ultralytics Inc.
