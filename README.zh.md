@@ -138,8 +138,8 @@ numpy
 ### 1. 複製專案並進入目錄
 
 ```bash
-git clone https://github.com/your-username/yolo-export-and-stream.git
-cd yolo-export-and-stream
+git clone https://github.com/patrick3399/yolo26-export-and-stream.git
+cd yolo26-export-and-stream
 ```
 
 ### 2. 建立並啟用虛擬環境
