@@ -482,7 +482,7 @@ yolo-env-tracker/
 ## License
 
 The scripts in this repository (`yolo_env_checker.py`, `yolo_http_tracker.py`)
-are released under the **MIT License** — free to use, modify, and distribute.
+are released under the **GNU Affero General Public License v3.0 (AGPLv3)**
 
 ---
 
