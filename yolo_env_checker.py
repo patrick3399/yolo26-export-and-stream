@@ -782,7 +782,7 @@ class YOLOEnvChecker:
         elif backend == 'MPS':
             res['INT8'] = '✅(CoreML)'
         elif backend == 'XPU':
-            res['INT8'] = '⚠(OV)'
+            res['INT8'] = '⚠ (OV)'
 
         # FP8 — Ada Lovelace / Hopper+  (CC ≥8.9)
         if backend == 'CUDA' and compute_cap >= 8.9:
@@ -807,9 +807,9 @@ class YOLOEnvChecker:
             return {**base, 'FP32': Y, 'FP16': Y, 'BF16': Y, 'INT8': '✅(CoreML)'}
 
         elif any(k in up for k in ('RADEON', 'AMD', 'RX ', 'VEGA', 'NAVI', 'RDNA')):
-            d = {**base, 'FP32': Y, 'FP16': '✅(DML)', 'INT8': '⚠(ONNX)'}
+            d = {**base, 'FP32': Y, 'FP16': '✅(DML)', 'INT8': '⚠ (ONNX)'}
             if any(k in up for k in ('RX 6', 'RX 7', '780M', '680M', 'RDNA2', 'RDNA3')):
-                d['BF16'] = '⚠(ROCm)'
+                d['BF16'] = '⚠ (ROCm)'
             return d
 
         elif 'INTEL' in up:
@@ -817,11 +817,11 @@ class YOLOEnvChecker:
             if any(k in up for k in ('ARC', 'XE', 'IRIS XE', 'A380', 'A770', 'B580', 'ULTRA', 'FLEX')):
                 d.update({'BF16': '✅(OV)', 'INT8': '✅(OV)'})
             else:
-                d['INT8'] = '⚠(OV)'
+                d['INT8'] = '⚠ (OV)'
             return d
 
         elif any(k in up for k in ('NVIDIA', 'GEFORCE', 'QUADRO', 'RTX', 'GTX', 'TESLA')):
-            return {**base, 'FP32': Y, 'FP16': Y, 'INT8': '⚠(Pascal+)'}
+            return {**base, 'FP32': Y, 'FP16': Y, 'INT8': '⚠ (Pascal+)'}
 
         return base
 

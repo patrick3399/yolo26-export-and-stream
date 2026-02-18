@@ -122,24 +122,106 @@ numpy
 
 ## Installation
 
+### 1. Clone and enter the repo
+
 ```bash
-# Clone the repository
-git clone https://github.com/your-username/yolo-env-tracker.git
-cd yolo-env-tracker
-
-# Install core dependencies
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-pip install ultralytics opencv-python numpy
-
-# Optional — install only what your hardware needs
-pip install tensorrt      # NVIDIA TensorRT
-pip install coremltools   # Apple CoreML
-pip install openvino      # Intel/AMD OpenVINO
-pip install py-cpuinfo    # Better CPU detection on Windows
+git clone https://github.com/your-username/yolo-export-and-stream.git
+cd yolo-export-and-stream
 ```
 
-> **Note:** For AMD GPU support on Linux, use the ROCm build of PyTorch:  
-> https://rocm.docs.amd.com/
+### 2. Create and activate a virtual environment
+
+```bash
+python3 -m venv venv
+```
+
+```bash
+# Windows
+venv\Scripts\activate
+
+# macOS / Linux
+source ./venv/bin/activate
+```
+
+```bash
+pip install --upgrade pip
+```
+
+### 3. Install dependencies — pick your platform
+
+#### macOS (CPU / Apple Silicon MPS)
+
+```bash
+pip install torch torchvision torchaudio
+pip install ultralytics
+```
+
+#### Linux — CPU only
+
+```bash
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+pip install ultralytics opencv-python-headless
+```
+
+> Use `opencv-python-headless` on headless servers (no display required).
+
+#### Linux — NVIDIA GPU (CUDA)
+
+```bash
+pip install torch torchvision torchaudio
+pip install ultralytics
+```
+
+#### Linux — NVIDIA GPU + TensorRT
+
+```bash
+pip install torch torchvision torchaudio
+pip install ultralytics tensorrt
+```
+
+### 4. Optional packages
+
+```bash
+pip install coremltools   # CoreML export (macOS only)
+pip install openvino      # OpenVINO export/inference (Intel/AMD)
+pip install py-cpuinfo    # Enhanced CPU ISA detection on Windows
+```
+
+---
+
+### CUDA Toolkit (required for TensorRT export)
+
+If you plan to export TensorRT `.engine` files, the CUDA Toolkit (nvcc) must
+be installed and match your PyTorch CUDA build.
+
+**Check current version:**
+
+```bash
+nvcc --version
+```
+
+**Download:** https://developer.nvidia.com/cuda-downloads
+
+**Update PyTorch to match your CUDA version** (example: CUDA 13.0):
+
+```bash
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
+```
+
+**Update system CUDA on Linux** (example: CUDA 13.1.1):
+
+```bash
+wget https://developer.download.nvidia.com/compute/cuda/13.1.1/local_installers/cuda_13.1.1_590.48.01_linux.run
+sudo sh cuda_13.1.1_590.48.01_linux.run
+```
+
+> After updating system CUDA, also reinstall PyTorch with the matching
+> `--index-url` as shown above so both versions align.
+
+---
+
+> **AMD GPU on Linux:** Use the ROCm build of PyTorch — https://rocm.docs.amd.com/  
+> **AMD GPU on Windows:** PyTorch does not support ROCm on Windows; use OpenVINO or ONNX Runtime instead.
 
 ---
 
