@@ -320,19 +320,19 @@ python yolo_env_checker.py
 ### Interactive menu flow (v1.1.0)
 
 ```
-Step 1 — Select task
+Step 1 — Select export format
+  PyTorch (CUDA / MPS / XPU / CPU) | TensorRT | CoreML | OpenVINO | ONNX
+
+Step 2 — Select task
   [1] Detection / Tracking     yolo26?.pt
   [2] Pose Estimation          yolo26?-pose.pt
   [3] Segmentation             yolo26?-seg.pt
 
-Step 2 — Select model size
+Step 3 — Select model size
   [1] Nano   [2] Small   [3] Medium   [4] Large   [5] XLarge
   (or type a custom filename directly)
 
-Step 3 — Select export format
-  PyTorch (CUDA / MPS / XPU / CPU) | TensorRT | CoreML | OpenVINO | ONNX
-
-Step 4 — Select precision
+Step 4 — Select precision  (skipped for PyTorch formats)
   FP32 | FP16 ⭐ | INT8
 ```
 
@@ -459,7 +459,7 @@ Produces per-pixel instance masks for each detected object.
 
 | File / path | Backend | Notes |
 |---|---|---|
-| `*.pt` / `*.yaml` | PyTorch | Ultralytics auto-selects device |
+| `*.pt` / `*.pth` / `*.yaml` | PyTorch | Ultralytics auto-selects device |
 | `*.engine` | TensorRT | CUDA required; fastest on NVIDIA |
 | `*_openvino_model/` | OpenVINO | Best for Intel CPUs, GPUs, NPUs |
 | `*.mlpackage` / `*.mlmodel` | CoreML | macOS / Apple Silicon only |

@@ -93,7 +93,7 @@ VIRTUAL_GPU_KEYWORDS = [
 
 
 class YOLOEnvChecker:
-    """YOLO Environment Checker & Model Export Tool  v1.0.0"""
+    """YOLO Environment Checker & Model Export Tool  v1.1.0"""
 
     def __init__(self):
         self.env_info = {

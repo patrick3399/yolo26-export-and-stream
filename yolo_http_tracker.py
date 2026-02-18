@@ -341,13 +341,20 @@ class RTSPStreamLoader:
                 ("CAP_ANY",    cv2.CAP_ANY),
             ]
             print(f"🪟 Windows — backends: {[b[0] for b in self.backend_list]}")
+        elif system_os == "Darwin":
+            self.backend_list = [
+                ("CAP_AVFOUNDATION", cv2.CAP_AVFOUNDATION),
+                ("CAP_FFMPEG",       cv2.CAP_FFMPEG),
+                ("CAP_ANY",          cv2.CAP_ANY),
+            ]
+            print(f"🍎 macOS — backends: {[b[0] for b in self.backend_list]}")
         else:
             self.backend_list = [
                 ("CAP_FFMPEG",    cv2.CAP_FFMPEG),
                 ("CAP_GSTREAMER", cv2.CAP_GSTREAMER),
                 ("CAP_V4L2",      cv2.CAP_V4L2),
             ]
-            print(f"🐧 Linux/Unix — backends: {[b[0] for b in self.backend_list]}")
+            print(f"🐧 Linux — backends: {[b[0] for b in self.backend_list]}")
 
         self.cap = None
         self.connected = False
@@ -732,9 +739,12 @@ class YOLOTracker:
             while not self.stop_encode_event.is_set():
                 with self.frame_lock:
                     if self.latest_frame is None:
-                        time.sleep(0.01)
-                        continue
-                    frame = self.latest_frame.copy()
+                        frame = None
+                    else:
+                        frame = self.latest_frame.copy()
+                if frame is None:
+                    time.sleep(0.01)
+                    continue
                 t0 = time.time()
                 ok, buf = cv2.imencode(
                     ".jpg", frame,
@@ -922,6 +932,7 @@ class YOLOTracker:
 
         # Build a composite overlay; blend once at the end for efficiency
         overlay = img.copy()
+        contour_list = []  # collect contours to draw after blending
 
         for i, mask_obj in enumerate(masks):
             # masks.data is (N, mH, mW) as a float tensor in [0, 1]
@@ -935,15 +946,19 @@ class YOLOTracker:
 
             overlay[mask_bin] = color
 
-            # Draw contour outline for a crisp edge
+            # Collect contour outlines for drawing after the blend
             contours, _ = cv2.findContours(
                 mask_bin.astype(np.uint8),
                 cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
             )
-            cv2.drawContours(img, contours, -1, color, 2)
+            contour_list.append((contours, color))
 
         # Blend the filled overlay with the original frame at 40 % opacity
         cv2.addWeighted(overlay, 0.4, img, 0.6, 0, img)
+
+        # Draw contour outlines at full opacity (after blend for crisp edges)
+        for contours, color in contour_list:
+            cv2.drawContours(img, contours, -1, color, 2)
 
         # Draw boxes and labels on top of the blended masks
         if boxes is not None:
@@ -1129,7 +1144,7 @@ class YOLOTracker:
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "YOLO HTTP-MJPEG Tracker v1.0.0 (Model-Driven Backend)\n\n"
+            "YOLO HTTP-MJPEG Tracker v1.1.0 (Model-Driven Backend + Full-Task)\n\n"
             "Backend is selected automatically from the model file:\n"
             "  *.pt                → PyTorch  (Ultralytics auto-device)\n"
             "  *.engine            → TensorRT (needs --device cuda or leave blank)\n"

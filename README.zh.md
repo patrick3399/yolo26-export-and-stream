@@ -316,19 +316,19 @@ python yolo_env_checker.py
 ### 互動選單流程（v1.1.0）
 
 ```
-第一層：選擇任務
+第一層：選擇匯出格式
+  PyTorch (CUDA / MPS / XPU / CPU) | TensorRT | CoreML | OpenVINO | ONNX
+
+第二層：選擇任務
   [1] 物件偵測 / 追蹤    yolo26?.pt
   [2] 姿勢估計           yolo26?-pose.pt
   [3] 實例分割           yolo26?-seg.pt
 
-第二層：選擇模型大小
+第三層：選擇模型大小
   [1] Nano  [2] Small  [3] Medium  [4] Large  [5] XLarge
   （或直接輸入自訂檔名）
 
-第三層：選擇匯出格式
-  PyTorch (CUDA / MPS / XPU / CPU) | TensorRT | CoreML | OpenVINO | ONNX
-
-第四層：選擇精度
+第四層：選擇精度（PyTorch 格式跳過此步驟）
   FP32 | FP16 ⭐ | INT8
 ```
 
@@ -450,7 +450,7 @@ python yolo_http_tracker.py --input <來源> --model <模型路徑> [選項]
 
 | 檔案 / 路徑 | 後端 | 備註 |
 |---|---|---|
-| `*.pt` / `*.yaml` | PyTorch | Ultralytics 自動選擇裝置 |
+| `*.pt` / `*.pth` / `*.yaml` | PyTorch | Ultralytics 自動選擇裝置 |
 | `*.engine` | TensorRT | 需要 CUDA；NVIDIA 上速度最快 |
 | `*_openvino_model/` | OpenVINO | 最適合 Intel CPU、GPU、NPU |
 | `*.mlpackage` / `*.mlmodel` | CoreML | 僅限 macOS / Apple Silicon |
