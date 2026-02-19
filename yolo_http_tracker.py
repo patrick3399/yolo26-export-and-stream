@@ -309,9 +309,10 @@ class PerformanceMonitor:
 
             stats["frame_count"]    = self.frame_count
             stats["dropped_frames"] = self.dropped_frames
+            total_received = self.frame_count + self.dropped_frames
             stats["drop_rate"]      = (
-                self.dropped_frames / self.frame_count * 100.0
-                if self.frame_count > 0 else 0.0
+                self.dropped_frames / total_received * 100.0
+                if total_received > 0 else 0.0
             )
             stats["client_count"] = self.get_client_count()
             stats["fps"]          = self.get_fps()
@@ -557,6 +558,7 @@ class RTSPStreamLoader:
             except queue.Full:
                 try:
                     self.q.get_nowait()
+                    self.monitor.record_drop()
                     self.q.put(frame, block=False)
                 except Exception:
                     self.monitor.record_drop()
