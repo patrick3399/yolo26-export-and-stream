@@ -341,13 +341,20 @@ class RTSPStreamLoader:
                 ("CAP_ANY",    cv2.CAP_ANY),
             ]
             print(f"🪟 Windows — backends: {[b[0] for b in self.backend_list]}")
+        elif system_os == "Darwin":
+            self.backend_list = [
+                ("CAP_AVFOUNDATION", cv2.CAP_AVFOUNDATION),
+                ("CAP_FFMPEG",       cv2.CAP_FFMPEG),
+                ("CAP_ANY",          cv2.CAP_ANY),
+            ]
+            print(f"🍎 macOS — backends: {[b[0] for b in self.backend_list]}")
         else:
             self.backend_list = [
                 ("CAP_FFMPEG",    cv2.CAP_FFMPEG),
                 ("CAP_GSTREAMER", cv2.CAP_GSTREAMER),
                 ("CAP_V4L2",      cv2.CAP_V4L2),
             ]
-            print(f"🐧 Linux/Unix — backends: {[b[0] for b in self.backend_list]}")
+            print(f"🐧 Linux — backends: {[b[0] for b in self.backend_list]}")
 
         self.cap = None
         self.connected = False
@@ -732,9 +739,12 @@ class YOLOTracker:
             while not self.stop_encode_event.is_set():
                 with self.frame_lock:
                     if self.latest_frame is None:
-                        time.sleep(0.01)
-                        continue
-                    frame = self.latest_frame.copy()
+                        frame = None
+                    else:
+                        frame = self.latest_frame.copy()
+                if frame is None:
+                    time.sleep(0.01)
+                    continue
                 t0 = time.time()
                 ok, buf = cv2.imencode(
                     ".jpg", frame,
@@ -777,7 +787,8 @@ class YOLOTracker:
         cv2.line(img, (x1, y2), (x1 + ll, y2), color, thickness)
         cv2.line(img, (x1, y2), (x1, y2 - ll), color, thickness)
 
-    def _draw_trajectory(self, img, track_id, center):
+    def _draw_trajectory(self, img, track_id, center,
+                         color=(0, 255, 0)):
         """Draw a fading trajectory trail for a tracked object."""
         self.trajectories[track_id].append(center)
         pts = list(self.trajectories[track_id])
@@ -789,16 +800,21 @@ class YOLOTracker:
                 img,
                 tuple(map(int, pts[i - 1])),
                 tuple(map(int, pts[i])),
-                (0, 255, 0),
+                color,
                 max(1, int(2 * alpha)),
             )
-        cv2.circle(img, tuple(map(int, center)), 4, (0, 255, 0), -1)
+        cv2.circle(img, tuple(map(int, center)), 4, color, -1)
 
     def _draw_detections(self, img, results) -> int:
         """Annotate the frame with corner-boxes, labels, and optional trajectories."""
         if not results or not results[0].boxes:
             return 0
-        num = 0
+
+        font  = cv2.FONT_HERSHEY_SIMPLEX
+        scale, thick = 0.8, 2
+
+        # Pre-compute all detection data and draw non-overlay elements
+        det_data = []
         for b in results[0].boxes:
             cls_id = int(b.cls[0])
             conf   = float(b.conf[0])
@@ -816,16 +832,20 @@ class YOLOTracker:
 
             self._draw_corner_box(img, x1, y1, x2, y2)
 
-            font  = cv2.FONT_HERSHEY_SIMPLEX
-            scale, thick = 0.8, 2
             (tw, th), _ = cv2.getTextSize(label, font, scale, thick)
-            # Semi-transparent label background
-            overlay = img.copy()
+            det_data.append((x1, y1, tw, th, label))
+
+        # Single overlay for all semi-transparent label backgrounds
+        overlay = img.copy()
+        for x1, y1, tw, th, _ in det_data:
             cv2.rectangle(overlay, (x1, y1 - th - 12), (x1 + tw + 12, y1), (0, 255, 0), -1)
-            cv2.addWeighted(overlay, 0.6, img, 0.4, 0, img)
+        cv2.addWeighted(overlay, 0.6, img, 0.4, 0, img)
+
+        # Draw text on top of the blended image
+        for x1, y1, _, _, label in det_data:
             cv2.putText(img, label, (x1 + 6, y1 - 6), font, scale, (255, 255, 255), thick, cv2.LINE_AA)
-            num += 1
-        return num
+
+        return len(det_data)
 
     # ──────────────────────────────────────────────────────────────────────────
     def _draw_pose(self, img, results) -> int:
@@ -848,6 +868,10 @@ class YOLOTracker:
         boxes  = r.boxes if r.boxes is not None else []
         num    = 0
 
+        font  = cv2.FONT_HERSHEY_SIMPLEX
+        scale, thick = 0.7, 2
+        label_data = []  # collect label rects for single-overlay blending
+
         for person_idx in range(len(kps)):
             kp_data = kps[person_idx].data[0].cpu().numpy()  # (17, 3)
 
@@ -868,7 +892,7 @@ class YOLOTracker:
                 cv2.circle(img, (int(x), int(y)), radius, (255, 255, 255), -1, cv2.LINE_AA)
                 cv2.circle(img, (int(x), int(y)), radius, (0, 0, 0),       1,  cv2.LINE_AA)
 
-            # ── Draw bounding box and label ─────────────────────────────────
+            # ── Collect bounding box and label data ─────────────────────────
             if person_idx < len(boxes):
                 bx = boxes[person_idx]
                 conf_val = float(bx.conf[0])
@@ -880,20 +904,26 @@ class YOLOTracker:
                 )
                 if self.trajectory and bx.id is not None:
                     cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-                    self._draw_trajectory(img, int(bx.id[0]), (cx, cy))
+                    self._draw_trajectory(img, int(bx.id[0]), (cx, cy),
+                                          color=(255, 220, 50))
 
                 self._draw_corner_box(img, x1, y1, x2, y2,
                                       color=(255, 220, 50), thickness=2)
-                font = cv2.FONT_HERSHEY_SIMPLEX
-                scale, thick = 0.7, 2
                 (tw, th), _ = cv2.getTextSize(label, font, scale, thick)
-                overlay = img.copy()
+                label_data.append((x1, y1, tw, th, label))
+            num += 1
+
+        # Single overlay for all semi-transparent label backgrounds
+        if label_data:
+            overlay = img.copy()
+            for x1, y1, tw, th, _ in label_data:
                 cv2.rectangle(overlay, (x1, y1 - th - 10), (x1 + tw + 10, y1),
                               (255, 220, 50), -1)
-                cv2.addWeighted(overlay, 0.6, img, 0.4, 0, img)
+            cv2.addWeighted(overlay, 0.6, img, 0.4, 0, img)
+            for x1, y1, _, _, label in label_data:
                 cv2.putText(img, label, (x1 + 5, y1 - 5),
                             font, scale, (0, 0, 0), thick, cv2.LINE_AA)
-            num += 1
+
         return num
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -922,6 +952,7 @@ class YOLOTracker:
 
         # Build a composite overlay; blend once at the end for efficiency
         overlay = img.copy()
+        contour_list = []  # collect contours to draw after blending
 
         for i, mask_obj in enumerate(masks):
             # masks.data is (N, mH, mW) as a float tensor in [0, 1]
@@ -935,18 +966,26 @@ class YOLOTracker:
 
             overlay[mask_bin] = color
 
-            # Draw contour outline for a crisp edge
+            # Collect contour outlines for drawing after the blend
             contours, _ = cv2.findContours(
                 mask_bin.astype(np.uint8),
                 cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
             )
-            cv2.drawContours(img, contours, -1, color, 2)
+            contour_list.append((contours, color))
 
         # Blend the filled overlay with the original frame at 40 % opacity
         cv2.addWeighted(overlay, 0.4, img, 0.6, 0, img)
 
+        # Draw contour outlines at full opacity (after blend for crisp edges)
+        for contours, color in contour_list:
+            cv2.drawContours(img, contours, -1, color, 2)
+
         # Draw boxes and labels on top of the blended masks
         if boxes is not None:
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            scale, thick = 0.75, 2
+            label_data = []
+
             for b in boxes:
                 cls_id  = int(b.cls[0])
                 conf    = float(b.conf[0])
@@ -959,20 +998,26 @@ class YOLOTracker:
                 )
                 if self.trajectory and b.id is not None:
                     cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-                    self._draw_trajectory(img, int(b.id[0]), (cx, cy))
+                    self._draw_trajectory(img, int(b.id[0]), (cx, cy),
+                                          color=color)
 
                 self._draw_corner_box(img, x1, y1, x2, y2,
                                       color=color, thickness=2)
-                font = cv2.FONT_HERSHEY_SIMPLEX
-                scale, thick = 0.75, 2
                 (tw, th), _ = cv2.getTextSize(label, font, scale, thick)
+                label_data.append((x1, y1, tw, th, label, color))
+
+            # Single overlay for all semi-transparent label backgrounds
+            if label_data:
                 lbl_overlay = img.copy()
-                cv2.rectangle(lbl_overlay, (x1, y1 - th - 10),
-                              (x1 + tw + 10, y1), color, -1)
+                for x1, y1, tw, th, _, color in label_data:
+                    cv2.rectangle(lbl_overlay, (x1, y1 - th - 10),
+                                  (x1 + tw + 10, y1), color, -1)
                 cv2.addWeighted(lbl_overlay, 0.65, img, 0.35, 0, img)
-                cv2.putText(img, label, (x1 + 5, y1 - 5),
-                            font, scale, (255, 255, 255), thick, cv2.LINE_AA)
-                num += 1
+                for x1, y1, _, _, label, _ in label_data:
+                    cv2.putText(img, label, (x1 + 5, y1 - 5),
+                                font, scale, (255, 255, 255), thick, cv2.LINE_AA)
+
+            num = len(label_data)
         return num
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -993,7 +1038,6 @@ class YOLOTracker:
         self.loader = RTSPStreamLoader(self.input_src, monitor=self.monitor)
 
         device_kw     = self._build_device_kwargs()
-        last_results  = None
         frame_cnt     = 0
         fps_tick      = time.time()
         fps_cnt       = 0
@@ -1031,9 +1075,6 @@ class YOLOTracker:
                     **device_kw,
                 )
                 self.monitor.record("inference", (time.time() - inf_t0) * 1000.0)
-
-                if results and results[0].boxes and len(results[0].boxes) > 0:
-                    last_results = results
             except Exception as e:
                 print(f"⚠ Inference error: {e}")
                 continue
@@ -1043,12 +1084,12 @@ class YOLOTracker:
             annotated = frame.copy()
 
             if self.model_task == 'pose':
-                num_obj = self._draw_pose(annotated, last_results)
+                num_obj = self._draw_pose(annotated, results)
             elif self.model_task == 'segment':
-                num_obj = self._draw_masks(annotated, last_results)
+                num_obj = self._draw_masks(annotated, results)
             else:
                 # Default: detection / tracking
-                num_obj = self._draw_detections(annotated, last_results)
+                num_obj = self._draw_detections(annotated, results)
 
             self.monitor.record("draw", (time.time() - draw_t0) * 1000.0)
 
@@ -1129,7 +1170,7 @@ class YOLOTracker:
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "YOLO HTTP-MJPEG Tracker v1.0.0 (Model-Driven Backend)\n\n"
+            "YOLO HTTP-MJPEG Tracker v1.1.0 (Model-Driven Backend + Full-Task)\n\n"
             "Backend is selected automatically from the model file:\n"
             "  *.pt                → PyTorch  (Ultralytics auto-device)\n"
             "  *.engine            → TensorRT (needs --device cuda or leave blank)\n"
