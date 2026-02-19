@@ -37,6 +37,7 @@ import platform
 import subprocess
 import warnings
 import multiprocessing
+import argparse
 from typing import Dict, List, Tuple, Optional
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -1320,11 +1321,20 @@ class YOLOEnvChecker:
             formats.append(('onnx', 'ONNX', 'Export to .onnx — universal format'))
         return formats
 
-    def select_format(self) -> Tuple[str, str]:
+    def select_format(self, preset: str = None) -> Tuple[str, str]:
         formats = self.get_available_formats()
         if not formats:
             print('\n❌ No available formats! Please install PyTorch first.')
             sys.exit(1)
+
+        # Non-interactive: use preset format id if provided
+        if preset:
+            for fid, name, desc in formats:
+                if fid == preset or fid.startswith(preset):
+                    print(f'  Format: {name} (from --format)')
+                    return fid, name
+            print(f'⚠ Requested format "{preset}" is not available; falling back to default.')
+
         self.print_header('📦 Select Export Format')
         print('Available formats:\n')
         for i, (fid, name, desc) in enumerate(formats, 1):
@@ -1343,7 +1353,10 @@ class YOLOEnvChecker:
             except KeyboardInterrupt:
                 print('\n\nCancelled'); sys.exit(0)
 
-    def select_model(self) -> str:
+    def select_model(self,
+                     preset_task: str = None,
+                     preset_size: str = None,
+                     preset_model: str = None) -> str:
         """
         Two-level interactive menu:
           Level 1 — choose the YOLO task (Detection / Pose / Segmentation)
@@ -1351,7 +1364,17 @@ class YOLOEnvChecker:
         Returns the composed model filename, e.g. 'yolo26s-pose.pt'.
         The user may also type a custom filename at the size prompt to skip
         the automatic composition logic entirely.
+
+        Non-interactive parameters:
+          preset_model — direct model filename (skips both levels)
+          preset_task  — 'detect' | 'pose' | 'segment'  (skips Level 1)
+          preset_size  — 'n' | 's' | 'm' | 'l' | 'x'   (skips Level 2)
         """
+        # ── Direct model path ────────────────────────────────────────────────
+        if preset_model:
+            print(f'  Model: {preset_model} (from --model)')
+            return preset_model if preset_model.endswith('.pt') else preset_model + '.pt'
+
         self.print_header('🎯 Select Task & Model')
 
         # ── Level 1: task ───────────────────────────────────────────────────
@@ -1363,20 +1386,26 @@ class YOLOEnvChecker:
             '3': ('-seg',  'Segmentation',
                   'Detect objects and produce per-pixel instance masks  (yolo26?-seg.pt)'),
         }
-        print('Step 1 — Select task:\n')
-        for k, (_, name, desc) in tasks.items():
-            print(f'  [{k}] {name}\n      {desc}\n')
+        _task_map = {'detect': '1', 'pose': '2', 'segment': '3'}
 
-        while True:
-            try:
-                t_choice = input('Select task (1-3) [1]: ').strip() or '1'
-                if t_choice in tasks:
-                    task_suffix, task_name, _ = tasks[t_choice]
-                    print(f'\n✅ Task: {task_name}')
-                    break
-                print('❌ Please enter 1, 2, or 3')
-            except KeyboardInterrupt:
-                print('\n\nCancelled'); sys.exit(0)
+        if preset_task and preset_task in _task_map:
+            t_choice = _task_map[preset_task]
+            task_suffix, task_name, _ = tasks[t_choice]
+            print(f'  Task: {task_name} (from --task)')
+        else:
+            print('Step 1 — Select task:\n')
+            for k, (_, name, desc) in tasks.items():
+                print(f'  [{k}] {name}\n      {desc}\n')
+            while True:
+                try:
+                    t_choice = input('Select task (1-3) [1]: ').strip() or '1'
+                    if t_choice in tasks:
+                        task_suffix, task_name, _ = tasks[t_choice]
+                        print(f'\n✅ Task: {task_name}')
+                        break
+                    print('❌ Please enter 1, 2, or 3')
+                except KeyboardInterrupt:
+                    print('\n\nCancelled'); sys.exit(0)
 
         # ── Level 2: size ───────────────────────────────────────────────────
         sizes = {
@@ -1386,6 +1415,14 @@ class YOLOEnvChecker:
             '4': ('l', 'Large  — high accuracy'),
             '5': ('x', 'XLarge — highest accuracy'),
         }
+        _size_map = {'n': '1', 's': '2', 'm': '3', 'l': '4', 'x': '5'}
+
+        if preset_size and preset_size in _size_map:
+            sz = preset_size
+            model = f'yolo26{sz}{task_suffix}.pt'
+            print(f'  Size: {model} (from --size)')
+            return model
+
         print(f'\nStep 2 — Select model size:\n')
         for k, (sz, desc) in sizes.items():
             name = f'yolo26{sz}{task_suffix}.pt'
@@ -1408,7 +1445,7 @@ class YOLOEnvChecker:
             except KeyboardInterrupt:
                 print('\n\nCancelled'); sys.exit(0)
 
-    def select_precision(self, format_id: str) -> str:
+    def select_precision(self, format_id: str, preset: str = None) -> str:
         self.print_header('⚙️  Select Precision')
         configs = {
             'tensorrt': ({'1':'fp32','2':'fp16','3':'int8'}, '2',
@@ -1423,6 +1460,16 @@ class YOLOEnvChecker:
         if format_id not in configs:
             return 'fp32'
         opts, dflt, msg = configs[format_id]
+        valid_precisions = list(opts.values())
+
+        # Non-interactive: use preset if valid for this format
+        if preset:
+            if preset in valid_precisions:
+                print(f'  Precision: {preset.upper()} (from --precision)')
+                return preset
+            print(f'⚠ Precision "{preset}" is not valid for {format_id} '
+                  f'(valid: {", ".join(valid_precisions)}); using default.')
+
         print(msg)
         while True:
             try:
@@ -1529,27 +1576,63 @@ class YOLOEnvChecker:
     # 18. Main flow
     # ------------------------------------------------------------------
 
-    def run(self):
+    def run(self, cli_args=None):
+        """
+        Main flow.  When *cli_args* (an argparse.Namespace) is supplied,
+        all interactive prompts are bypassed for arguments that were provided
+        on the command line.  Pass ``--auto`` to skip every prompt silently.
+        """
         print('\n' + '='*70)
         print('  🔥 YOLO Environment Checker & Model Export Tool  v1.1.0')
         print('='*70)
         self.detect_all()
         self.show_environment()
 
+        # ── Scan-only mode: show environment then exit ──────────────────────
+        if cli_args and cli_args.scan_only:
+            return
+
         if not self.env_info['pytorch'].get('installed'):
             print('\n❌ PyTorch is not installed; cannot proceed to export.')
             print('   pip install torch\n')
             sys.exit(1)
 
-        self.print_section('📝 Next Step')
-        print('You will now select a model and export format.\n')
-        try:
-            input('Press Enter to continue, or Ctrl+C to cancel... ')
-        except KeyboardInterrupt:
-            print('\n\nCancelled'); sys.exit(0)
+        # ── Determine whether to skip the "Press Enter" gate ────────────────
+        non_interactive = cli_args and (
+            cli_args.auto or cli_args.format or cli_args.task
+            or cli_args.size or cli_args.model
+        )
 
-        format_id, format_name = self.select_format()
-        model_name = self.select_model()
+        if not non_interactive:
+            self.print_section('📝 Next Step')
+            print('You will now select a model and export format.\n')
+            try:
+                input('Press Enter to continue, or Ctrl+C to cancel... ')
+            except KeyboardInterrupt:
+                print('\n\nCancelled'); sys.exit(0)
+
+        # ── Format selection ─────────────────────────────────────────────────
+        preset_fmt = None
+        if cli_args:
+            if cli_args.format:
+                preset_fmt = cli_args.format
+            elif cli_args.auto:
+                # Pick the first (highest-priority) available format automatically
+                avail = self.get_available_formats()
+                preset_fmt = avail[0][0] if avail else None
+
+        format_id, format_name = self.select_format(preset=preset_fmt)
+
+        # ── Model selection ──────────────────────────────────────────────────
+        preset_task  = cli_args.task  if cli_args else None
+        preset_size  = cli_args.size  if cli_args else None
+        preset_model = cli_args.model if cli_args else None
+
+        model_name = self.select_model(
+            preset_task=preset_task,
+            preset_size=preset_size,
+            preset_model=preset_model,
+        )
 
         if format_id.startswith('pytorch_'):
             self.print_header('🚀 Using PyTorch Model Directly')
@@ -1561,7 +1644,15 @@ class YOLOEnvChecker:
             print('Thank you for using the tool!\n')
             return
 
-        precision = self.select_precision(format_id)
+        # ── Precision selection ──────────────────────────────────────────────
+        preset_prec = None
+        if cli_args:
+            if cli_args.precision:
+                preset_prec = cli_args.precision
+            elif cli_args.auto:
+                preset_prec = 'fp16'   # sensible default for all export formats
+
+        precision = self.select_precision(format_id, preset=preset_prec)
         self.export_model(format_id, model_name, precision)
         self.print_header('✨ Done')
         print('Thank you for using the tool!\n')
@@ -1569,9 +1660,81 @@ class YOLOEnvChecker:
 
 # ────────────────────────────────────────────────────────────────────────────
 
+def _build_arg_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog='yolo_env_checker',
+        description=(
+            'YOLO Environment Checker & Model Export Tool  v1.1.0\n\n'
+            'Without arguments the tool runs interactively.\n'
+            'Supply --auto (or individual flags) for non-interactive / CI use.\n\n'
+            'Examples:\n'
+            '  # Interactive (default)\n'
+            '  python yolo_env_checker.py\n\n'
+            '  # Scan only — print env report and exit\n'
+            '  python yolo_env_checker.py --scan-only\n\n'
+            '  # Fully automated export\n'
+            '  python yolo_env_checker.py --auto\n\n'
+            '  # Specify every option explicitly\n'
+            '  python yolo_env_checker.py --task detect --size s '
+            '--format tensorrt --precision fp16\n\n'
+            '  # Export a pose model to ONNX/FP32 without prompts\n'
+            '  python yolo_env_checker.py --task pose --size m '
+            '--format onnx --precision fp32'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+    p.add_argument(
+        '--scan-only', action='store_true',
+        help='Print environment report and exit without exporting.',
+    )
+    p.add_argument(
+        '--auto', action='store_true',
+        help=(
+            'Skip all interactive prompts and use defaults / best available '
+            'values.  Individual flags (--task, --size, etc.) override the '
+            'automatic choices.'
+        ),
+    )
+    p.add_argument(
+        '--task', choices=['detect', 'pose', 'segment'], default=None,
+        metavar='TASK',
+        help='YOLO task: detect | pose | segment  (default: detect)',
+    )
+    p.add_argument(
+        '--size', choices=['n', 's', 'm', 'l', 'x'], default=None,
+        metavar='SIZE',
+        help='Model size: n | s | m | l | x  (default: s)',
+    )
+    p.add_argument(
+        '--model', default=None, metavar='FILENAME',
+        help=(
+            'Direct model filename (e.g. yolo26s-pose.pt).  '
+            'When set, --task and --size are ignored.'
+        ),
+    )
+    p.add_argument(
+        '--format',
+        choices=['pytorch', 'pytorch_cuda', 'pytorch_mps', 'pytorch_xpu',
+                 'pytorch_cpu', 'tensorrt', 'coreml', 'openvino', 'onnx'],
+        default=None, metavar='FORMAT',
+        help=(
+            'Export format: pytorch | tensorrt | coreml | openvino | onnx  '
+            '(default: best available)'
+        ),
+    )
+    p.add_argument(
+        '--precision', choices=['fp32', 'fp16', 'int8'], default=None,
+        metavar='PREC',
+        help='Export precision: fp32 | fp16 | int8  (default: fp16)',
+    )
+    return p
+
+
 def main():
+    cli_args = _build_arg_parser().parse_args()
     try:
-        YOLOEnvChecker().run()
+        YOLOEnvChecker().run(cli_args=cli_args)
     except KeyboardInterrupt:
         print('\n\nCancelled'); sys.exit(0)
     except Exception as e:
