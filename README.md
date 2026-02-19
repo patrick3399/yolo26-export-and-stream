@@ -30,7 +30,9 @@ Supported tasks (v1.1.0):
 - [Precision Reference](#precision-reference)
 - [Pros & Cons](#pros--cons)
 - [Troubleshooting](#troubleshooting)
+- [Project Structure](#project-structure)
 - [License](#license)
+- [Third-Party Notices](#third-party-notices)
 
 ---
 
@@ -569,18 +571,19 @@ python yolo_http_tracker.py --model yolo26s_fp16_openvino_model --device intel:g
 ## Project Structure
 
 ```
-yolo-export-and-stream/
+yolo26-export-and-stream/
 ├── yolo_env_checker.py     # Step 1: environment check + model export (v1.1.0)
 ├── yolo_http_tracker.py    # Step 2: live HTTP streaming tracker  (v1.1.0)
-├── README.md  
-└── README.zh.md  
+├── LICENSE
+├── README.md
+└── README.zh.md
 ```
 
 ---
 
 ## License
 
-The scripts in this project（`yolo_env_checker.py`、`yolo_http_tracker.py`） are released under the **GNU Affero General Public License v3.0 (AGPLv3)**.
+The scripts in this project (`yolo_env_checker.py`, `yolo_http_tracker.py`) are released under the **GNU Affero General Public License v3.0 (AGPLv3)**.
 
 Under the AGPLv3, you are free to use, modify, and distribute this software, subject to the following conditions:
 

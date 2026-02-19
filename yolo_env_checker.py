@@ -228,10 +228,10 @@ class YOLOEnvChecker:
                         ln_lo = ln.lower()
                         if 'core' in ln_lo and 'socket' in ln_lo:
                             try: cps = int(ln.split(':')[1].strip())
-                            except: pass
+                            except (ValueError, IndexError): pass
                         elif 'socket' in ln_lo and 'core' not in ln_lo:
                             try: skt = int(ln.split(':')[1].strip())
-                            except: pass
+                            except (ValueError, IndexError): pass
                     if cps and skt:
                         physical = cps * skt
             elif os_type == 'Darwin':
@@ -693,8 +693,8 @@ class YOLOEnvChecker:
             if '+cu' in torch.__version__:
                 cu = torch.__version__.split('+cu')[1].split('+')[0]
                 result['pytorch_cuda_version'] = (
-                    f"{cu[0:2]}.{cu[2]}" if len(cu) == 3 else
-                    f"{cu[0]}.{cu[1]}"   if len(cu) == 2 else None
+                    f"{cu[0:2]}.{cu[2:]}" if len(cu) >= 3 else
+                    f"{cu[0]}.{cu[1]}"    if len(cu) == 2 else None
                 )
             try:
                 if torch.cuda.is_available():
@@ -837,7 +837,7 @@ class YOLOEnvChecker:
         Y  = '✅'
         up = name.upper()
 
-        if any(k in up for k in ('APPLE', 'M1', 'M2', 'M3', 'M4')):
+        if 'APPLE' in up or any(f'M{i}' in up for i in range(1, 10)):
             return {**base, 'FP32': Y, 'FP16': Y, 'BF16': Y, 'INT8': '✅(CoreML)'}
 
         elif any(k in up for k in ('RADEON', 'AMD', 'RX ', 'VEGA', 'NAVI', 'RDNA')):

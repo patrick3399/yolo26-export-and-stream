@@ -65,8 +65,8 @@ import threading
 import time
 from collections import defaultdict, deque
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
 from socketserver import ThreadingMixIn
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -171,30 +171,30 @@ def task_display_name(task: str) -> str:
 #                 9=left_wrist 10=right_wrist 11=left_hip 12=right_hip
 #                13=left_knee 14=right_knee 15=left_ankle 16=right_ankle
 POSE_SKELETON = [
-    # Face
-    (0, 1,  (255, 220,  50)),
-    (0, 2,  (255, 220,  50)),
-    (1, 3,  (255, 220,  50)),
-    (2, 4,  (255, 220,  50)),
-    # Shoulder bar
-    (5, 6,  (0, 200, 255)),
-    # Left arm
-    (5, 7,  (0, 200, 255)),
-    (7, 9,  (0, 200, 255)),
-    # Right arm
-    (6, 8,  (255, 100, 100)),
-    (8, 10, (255, 100, 100)),
-    # Torso
+    # Face — yellow
+    (0, 1,  (50, 220, 255)),
+    (0, 2,  (50, 220, 255)),
+    (1, 3,  (50, 220, 255)),
+    (2, 4,  (50, 220, 255)),
+    # Shoulder bar — cyan (grouped with left arm)
+    (5, 6,  (255, 200, 0)),
+    # Left arm — cyan
+    (5, 7,  (255, 200, 0)),
+    (7, 9,  (255, 200, 0)),
+    # Right arm — red/pink
+    (6, 8,  (100, 100, 255)),
+    (8, 10, (100, 100, 255)),
+    # Torso — grey
     (5, 11, (180, 180, 180)),
     (6, 12, (180, 180, 180)),
-    # Hip bar
+    # Hip bar — grey
     (11, 12, (180, 180, 180)),
-    # Left leg
+    # Left leg — green
     (11, 13, (100, 255, 100)),
     (13, 15, (100, 255, 100)),
-    # Right leg
-    (12, 14, (50, 180, 255)),
-    (14, 16, (50, 180, 255)),
+    # Right leg — blue
+    (12, 14, (255, 180, 50)),
+    (14, 16, (255, 180, 50)),
 ]
 
 # Default keypoint confidence threshold — overridden at runtime by --pose-kp-conf.
@@ -204,8 +204,7 @@ POSE_KP_CONF = 0.3
 # Pre-group POSE_SKELETON connections by BGR colour so the draw loop can issue
 # one cv2.polylines() call per colour instead of one cv2.line() per connection.
 # Built once at module import time; never mutated at runtime.
-from collections import defaultdict as _defaultdict
-_SKELETON_BY_COLOR: dict = _defaultdict(list)
+_SKELETON_BY_COLOR: dict = defaultdict(list)
 for _a, _b, _c in POSE_SKELETON:
     _SKELETON_BY_COLOR[_c].append((_a, _b))
 del _a, _b, _c  # clean up loop variables from module namespace
@@ -1101,10 +1100,10 @@ class YOLOTracker:
                 if self.trajectory and bx.id is not None:
                     cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
                     self._draw_trajectory(img, int(bx.id[0]), (cx, cy),
-                                          color=(255, 220, 50))
+                                          color=(50, 220, 255))
 
                 self._draw_corner_box(img, x1, y1, x2, y2,
-                                      color=(255, 220, 50), thickness=2)
+                                      color=(50, 220, 255), thickness=2)
                 (tw, th), _ = cv2.getTextSize(label, font, scale, thick)
                 label_data.append((x1, y1, tw, th, label))
             num += 1
@@ -1115,7 +1114,7 @@ class YOLOTracker:
             for x1, y1, tw, th, _ in label_data:
                 y_label = y1 if y1 - th - 10 > 0 else y1 + th + 10
                 cv2.rectangle(overlay, (x1, y_label - th - 10), (x1 + tw + 10, y_label),
-                              (255, 220, 50), -1)
+                              (50, 220, 255), -1)
             cv2.addWeighted(overlay, 0.6, img, 0.4, 0, img)
             for x1, y1, tw, th, label in label_data:
                 y_label = y1 if y1 - th - 10 > 0 else y1 + th + 10
@@ -1228,6 +1227,8 @@ class YOLOTracker:
                                 font, scale, (255, 255, 255), thick, cv2.LINE_AA)
 
             num = len(masks)  # count all drawn masks, not just labelled boxes
+        else:
+            num = len(masks)  # masks were drawn even without boxes
         return num
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -1376,9 +1377,6 @@ class YOLOTracker:
         def _sigint(signum, frame):
             print("\n🛑 Stopping …")
             self.running = False
-            if server:
-                server.shutdown()
-            sys.exit(0)
 
         signal.signal(signal.SIGINT, _sigint)
 
