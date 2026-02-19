@@ -374,19 +374,48 @@ class RTSPStreamLoader:
         self.cap = None
         self.connected = False
         self.backend_name = None
+        # L3: slot for the currently active cap.read() daemon thread.
+        # At most ONE thread is allowed per cap instance (see _timed_read).
+        self._pending_read_thread: Optional[threading.Thread] = None
 
         self._open_capture()
         self.thread = threading.Thread(target=self._update, daemon=True)
         self.thread.start()
 
     def _open_capture(self):
-        """Try each backend in order; raise RuntimeError if all fail."""
+        """Try each backend in order; raise RuntimeError if all fail.
+
+        L2 fix: release the old cap *before* opening a new one.
+        --------------------------------------------------------
+        Any daemon thread currently blocked inside C++ ``cap.read()`` holds a
+        reference to the previous VideoCapture object.  Calling
+        ``cap.release()`` on the old object closes the underlying socket /
+        file-descriptor, which causes the C++ read to return an error and
+        allows the zombie thread to exit naturally — instead of waiting for
+        an OS-level TCP timeout that can take tens of minutes.
+        """
+        # Release the previous capture so zombie threads can unblock
+        if self.cap is not None:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+            self.cap = None
+
         for name, code in self.backend_list:
             try:
                 print(f"   Trying {name} ...", end="", flush=True)
                 cap = cv2.VideoCapture(self.src, code)
                 if code == cv2.CAP_FFMPEG:
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # Minimise latency
+                    # L1 fix: ask FFmpeg to enforce its own read timeout at the
+                    # C level.  When these properties are honoured (OpenCV ≥ 4.1
+                    # built with a sufficiently recent FFmpeg), cap.read() will
+                    # raise an error rather than block forever, so _timed_read()
+                    # never needs to rely on the daemon-thread sentinel at all.
+                    timeout_ms = int(_CAP_READ_TIMEOUT * 1000)
+                    cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, timeout_ms)
+                    cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, timeout_ms)
                 if cap.isOpened():
                     ret, frame = cap.read()
                     if ret and frame is not None:
@@ -408,39 +437,60 @@ class RTSPStreamLoader:
 
     def _timed_read(self) -> tuple:
         """
-        Call ``self.cap.read()`` in a short-lived daemon thread and wait at
-        most *_CAP_READ_TIMEOUT* seconds for it to complete.
+        Call ``self.cap.read()`` in a daemon thread with a wall-clock timeout.
 
-        Problem this solves
+        Three-layer defence against thread leaks
+        ----------------------------------------
+        L1 (OpenCV-native, set in _open_capture):
+            ``CAP_PROP_READ_TIMEOUT_MSEC`` asks the FFmpeg backend to honour a
+            read deadline inside C++.  When supported this prevents any hang
+            entirely, making this thread-based fallback unnecessary.
+
+        L2 (cap.release in _open_capture):
+            Before creating a replacement VideoCapture, _open_capture() calls
+            ``self.cap.release()`` on the old object.  That closes the
+            underlying socket, which causes a hung C++ ``cap.read()`` to
+            return an error, letting the zombie thread exit naturally.
+
+        L3 (one-thread-per-cap, implemented here):
+            ``self._pending_read_thread`` records the current daemon thread.
+            If it is still alive when we are called again, the cap is still
+            stuck: we return failure immediately *without spawning a second
+            thread*.  This bounds the worst-case leak to exactly one thread
+            per VideoCapture instance — i.e. O(reconnects), not O(frames).
+
+        Race-condition note
         -------------------
-        With some ffmpeg/RTSP backends, ``cap.read()`` can hang indefinitely
-        when the network path fails silently (no TCP RST, no RTSP TEARDOWN).
-        In that scenario the background ``_update`` thread blocks forever,
-        ``self.connected`` remains ``True``, and the reconnect logic never
-        fires — leaving the whole pipeline stalled.
-
-        Solution
-        --------
-        Run the blocking ``cap.read()`` in a daemon thread monitored by an
-        ``Event``.  If the event is not set within ``_CAP_READ_TIMEOUT``
-        seconds we treat it as a read failure (``ret=False, frame=None``).
-        The leaked daemon thread will eventually unblock on its own once the
-        OS-level TCP timeout fires; it cannot corrupt state because
-        ``_update`` has already set ``self.connected = False`` and started a
-        fresh ``VideoCapture``.
+        ``self.cap`` is captured into a local ``cap_snapshot`` before the
+        thread is started.  Even if ``_open_capture()`` reassigns ``self.cap``
+        to a new object on another code path, the running thread continues to
+        operate on the original cap and never touches the new one.
         """
+        # L3: if the previous thread is still alive the cap is stuck — avoid
+        # spawning another thread on top of the already-stuck one.
+        if (self._pending_read_thread is not None
+                and self._pending_read_thread.is_alive()):
+            return False, None
+
+        # Snapshot the cap reference so the closure is immune to reassignment
+        # of self.cap that may happen concurrently during a reconnect cycle.
+        cap_snapshot = self.cap
         result = [False, None]
         done   = threading.Event()
 
         def _do_read():
-            result[0], result[1] = self.cap.read()
+            result[0], result[1] = cap_snapshot.read()
             done.set()
 
-        t = threading.Thread(target=_do_read, daemon=True)
+        t = threading.Thread(target=_do_read, daemon=True, name="rtsp-read")
+        self._pending_read_thread = t
         t.start()
         if done.wait(_CAP_READ_TIMEOUT):
+            # Read completed within the deadline — clear the slot.
+            self._pending_read_thread = None
             return result[0], result[1]
-        # Timed out — treat as read failure so reconnect logic is triggered
+        # Timed out.  _update() will set self.connected=False; _open_capture()
+        # will call cap_snapshot.release(), which should unblock _do_read().
         print(f"⚠ cap.read() timed out after {_CAP_READ_TIMEOUT:.0f}s — reconnecting …")
         return False, None
 
