@@ -1,6 +1,6 @@
 # YOLO 環境檢測工具 & HTTP 串流追蹤器
 
-一套兩件式流水線，可在任何硬體上部署 YOLO 物件偵測、姿勢估計與語義分割：
+一套兩件式流水線，可在任何硬體上部署 YOLO 物件偵測、姿勢估計與實例分割：
 
 1. **`yolo_env_checker.py`** — 掃描硬體環境、選擇最佳匯出格式並匯出模型。
 2. **`yolo_http_tracker.py`** — 載入匯出的模型，透過 HTTP（MJPEG）即時串流標註影像。
@@ -29,7 +29,9 @@
 - [精度對照表](#精度對照表)
 - [優點與限制](#優點與限制)
 - [疑難排解](#疑難排解)
+- [專案結構](#專案結構)
 - [授權](#授權)
+- [第三方聲明](#第三方聲明)
 
 ---
 
@@ -83,7 +85,7 @@ python yolo_http_tracker.py \
 | 精度支援矩陣 | FP32/FP16/BF16/INT8/INT4/FP8，以實際 tensor 分配驗證 |
 | 推理框架偵測 | TensorRT、CoreML、OpenVINO |
 | 智慧診斷 | AMD / Intel GPU 建議、版本衝突修復方案 |
-| 互動式選單 | 任務 → 模型大小 → 格式 → 精度，附推薦預設值 |
+| 互動式選單 | 格式 → 任務 → 模型大小 → 精度，附推薦預設值 |
 
 ### HTTP 串流追蹤器（`yolo_http_tracker.py`）
 
@@ -557,11 +559,12 @@ python yolo_http_tracker.py --model yolo26s_fp16_openvino_model --device intel:g
 ## 專案結構
 
 ```
-yolo-export-and-stream/
+yolo26-export-and-stream/
 ├── yolo_env_checker.py     # 第一步：環境檢測 + 模型匯出（v1.1.0）
 ├── yolo_http_tracker.py    # 第二步：即時 HTTP 串流追蹤器（v1.1.0）
-├── README.md  
-└── README.zh.md  
+├── LICENSE
+├── README.md
+└── README.zh.md
 ```
 
 ---

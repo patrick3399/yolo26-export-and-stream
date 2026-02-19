@@ -1,0 +1,5 @@
+# Minimum dependencies
+torch>=2.0
+ultralytics
+opencv-python
+numpy
