@@ -1,4 +1,4 @@
-# YOLO Environment Checker & HTTP Tracker  v1.1.0
+# YOLO Environment Checker & HTTP Tracker
 
 A two-tool pipeline for deploying YOLO object detection, pose estimation, and
 segmentation on any hardware:
