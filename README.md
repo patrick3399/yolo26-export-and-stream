@@ -93,7 +93,7 @@ python yolo_http_tracker.py \
 | Model-driven backend | Backend inferred from file extension; no manual flag needed |
 | Model-driven task | Task inferred from filename suffix (`-pose`, `-seg`); confirmed from `model.task` after load |
 | Detection / Tracking | Corner-box overlay, label, confidence %, optional trajectory trails |
-| Pose Estimation | COCO 17-keypoint skeleton; colour-coded zones (face / arms / legs); low-confidence keypoints skipped |
+| Pose Estimation | COCO 17-keypoint skeleton; colour-coded zones (face / arms / legs); keypoints below `--pose-kp-conf` threshold skipped |
 | Segmentation | Semi-transparent per-instance colour masks (20-colour palette by class); contour outline; corner-box + label on top |
 | Multi-client MJPEG | Unlimited simultaneous browser/VLC viewers |
 | HTML viewer | Auto-refresh stats panel (Task, FPS, inference ms, drop rate, clients) |
@@ -393,6 +393,7 @@ python yolo_http_tracker.py --input <source> --model <model_path> [options]
 | `--trajectory-length` | `30` | Max history points per object |
 | `--quality` | `60` | JPEG encoding quality (0–100) |
 | `--classes` | *(all)* | Filter class names, e.g. `--classes person car` |
+| `--pose-kp-conf` | `0.3` | Keypoint confidence threshold for pose estimation; keypoints below this value are not drawn |
 
 ### HTTP endpoints
 
@@ -435,7 +436,7 @@ Detects people and estimates 17 COCO body keypoints per person.
   - **Grey** — torso (shoulder–hip connections, hip bar)
   - **Green** — left leg
   - **Blue** — right leg
-- Keypoints with confidence < 0.3 are skipped (no phantom limbs)
+- Keypoints below the `--pose-kp-conf` threshold (default `0.3`) are skipped (no phantom limbs)
 - Bounding box and label drawn on top of the skeleton
 - Trajectory trails supported via track ID (`--trajectory`)
 
