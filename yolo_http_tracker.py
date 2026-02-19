@@ -225,6 +225,19 @@ SEG_PALETTE = [
 ]
 
 
+def _class_color(cls_id: int) -> tuple:
+    """Return a distinct BGR colour for a given class ID (YOLO-style HSV palette).
+
+    Uses the golden-ratio hue method so colours are maximally spread across
+    the hue wheel regardless of how many classes the model has.
+    """
+    golden = 0.618033988749895
+    hue = int((cls_id * golden % 1.0) * 180)
+    hsv = np.array([[[hue, 210, 255]]], dtype=np.uint8)
+    bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0][0]
+    return (int(bgr[0]), int(bgr[1]), int(bgr[2]))
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Performance monitor
 # ────────────────────────────────────────────────────────────────────────────
@@ -1045,24 +1058,26 @@ class YOLOTracker:
                 else f"{self.class_names[cls_id]} {int(conf*100)}%"
             )
 
+            color = _class_color(cls_id)
+
             if self.trajectory and b.id is not None:
                 cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-                self._draw_trajectory(img, int(b.id[0]), (cx, cy))
+                self._draw_trajectory(img, int(b.id[0]), (cx, cy), color=color)
 
-            self._draw_corner_box(img, x1, y1, x2, y2)
+            self._draw_corner_box(img, x1, y1, x2, y2, color=color)
 
             (tw, th), _ = cv2.getTextSize(label, font, scale, thick)
-            det_data.append((x1, y1, tw, th, label))
+            det_data.append((x1, y1, tw, th, label, color))
 
         # Single overlay for all semi-transparent label backgrounds
         overlay = img.copy()
-        for x1, y1, tw, th, _ in det_data:
+        for x1, y1, tw, th, _, color in det_data:
             y_label = y1 if y1 - th - 12 > 0 else y1 + th + 12
-            cv2.rectangle(overlay, (x1, y_label - th - 12), (x1 + tw + 12, y_label), (0, 255, 0), -1)
+            cv2.rectangle(overlay, (x1, y_label - th - 12), (x1 + tw + 12, y_label), color, -1)
         cv2.addWeighted(overlay, 0.6, img, 0.4, 0, img)
 
         # Draw text on top of the blended image
-        for x1, y1, tw, th, label in det_data:
+        for x1, y1, tw, th, label, _ in det_data:
             y_label = y1 if y1 - th - 12 > 0 else y1 + th + 12
             cv2.putText(img, label, (x1 + 6, y_label - 6), font, scale, (255, 255, 255), thick, cv2.LINE_AA)
 
