@@ -160,11 +160,11 @@ class YOLOEnvChecker:
     # 3. CPU details  (model / cores / threads / RAM / ISA extensions)
     # ------------------------------------------------------------------
 
-    def _run_cmd(self, cmd, shell=False, timeout=5) -> str:
+    def _run_cmd(self, cmd, shell=False, timeout=5, env=None) -> str:
         try:
             out = subprocess.check_output(
                 cmd, shell=shell, stderr=subprocess.DEVNULL,
-                timeout=timeout
+                timeout=timeout, env=env
             )
             return out.decode(errors='ignore').strip()
         except Exception:
@@ -195,7 +195,7 @@ class YOLOEnvChecker:
                 if raw:
                     return raw.split('\n')[0].strip()
                 # wmic fallback
-                raw2 = self._run_cmd('wmic cpu get Name /value', shell=True)
+                raw2 = self._run_cmd(['wmic', 'cpu', 'get', 'Name', '/value'])
                 for ln in raw2.split('\n'):
                     if ln.startswith('Name='):
                         return ln.split('=', 1)[1].strip()
@@ -220,15 +220,16 @@ class YOLOEnvChecker:
                 if cores_seen:
                     physical = len(cores_seen)
                 else:
-                    raw = self._run_cmd(
-                        "lscpu | grep -E 'Core.s. per socket|Socket'", shell=True
-                    )
+                    # Force English output to avoid locale-dependent labels
+                    c_env = {**os.environ, 'LANG': 'C', 'LC_ALL': 'C'}
+                    raw = self._run_cmd(['lscpu'], env=c_env)
                     cps = skt = None
                     for ln in raw.split('\n'):
-                        if 'Core' in ln:
+                        ln_lo = ln.lower()
+                        if 'core' in ln_lo and 'socket' in ln_lo:
                             try: cps = int(ln.split(':')[1].strip())
                             except: pass
-                        if 'Socket' in ln:
+                        elif 'socket' in ln_lo and 'core' not in ln_lo:
                             try: skt = int(ln.split(':')[1].strip())
                             except: pass
                     if cps and skt:
@@ -545,20 +546,40 @@ class YOLOEnvChecker:
         os_type = platform.system()
         try:
             if os_type == 'Windows':
+                gpus = []
                 flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
-                raw = subprocess.check_output(
-                    ['powershell', '-NoProfile', '-Command',
-                     'Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name'],
-                    stderr=subprocess.STDOUT, creationflags=flags, timeout=10
-                ).decode(errors='ignore')
-                gpus = [ln.strip() for ln in raw.replace('\r\n', '\n').split('\n') if ln.strip()]
-                result['method'] = 'PowerShell Win32_VideoController'
+                # Try PowerShell first
+                try:
+                    raw = subprocess.check_output(
+                        ['powershell', '-NoProfile', '-Command',
+                         'Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name'],
+                        stderr=subprocess.STDOUT, creationflags=flags, timeout=10
+                    ).decode(errors='ignore')
+                    gpus = [ln.strip() for ln in raw.replace('\r\n', '\n').split('\n') if ln.strip()]
+                    result['method'] = 'PowerShell Win32_VideoController'
+                except Exception:
+                    pass
+                # Fallback to wmic if PowerShell failed or returned nothing
+                if not gpus:
+                    try:
+                        raw = subprocess.check_output(
+                            ['wmic', 'path', 'Win32_VideoController', 'get', 'Name', '/value'],
+                            stderr=subprocess.DEVNULL, creationflags=flags, timeout=10
+                        ).decode(errors='ignore')
+                        gpus = [ln.split('=', 1)[1].strip()
+                                for ln in raw.replace('\r\n', '\n').split('\n')
+                                if ln.startswith('Name=')]
+                        result['method'] = 'wmic Win32_VideoController'
+                    except Exception:
+                        pass
 
             elif os_type == 'Darwin':
                 raw = self._run_cmd(
-                    "system_profiler SPDisplaysDataType | grep 'Chipset Model'", shell=True
+                    ['system_profiler', 'SPDisplaysDataType'], timeout=10
                 )
-                gpus = [ln.split(':', 1)[1].strip() for ln in raw.split('\n') if ':' in ln]
+                gpus = [ln.split(':', 1)[1].strip()
+                        for ln in raw.split('\n')
+                        if 'Chipset Model' in ln and ':' in ln]
                 result['method'] = 'system_profiler SPDisplaysDataType'
 
             else:  # Linux
@@ -623,18 +644,25 @@ class YOLOEnvChecker:
                 if len(p) >= 2:
                     result['gpu_names'].append(p[0])
                     result['gpu_details'].append({'name': p[0], 'memory': p[1]})
+                # Extract driver version from CSV (stable API)
+                if len(p) >= 3 and p[2] and not result['driver_version']:
+                    result['driver_version'] = p[2]
 
-            smi = subprocess.check_output(
-                ['nvidia-smi'], stderr=subprocess.STDOUT,
-                universal_newlines=True, timeout=10
-            )
-            for ln in smi.split('\n'):
-                if 'Driver Version:' in ln and 'CUDA Version:' in ln:
-                    result['driver_version']      = ln.split('Driver Version:')[1].split('CUDA')[0].strip().split()[0]
-                    result['driver_cuda_version'] = ln.split('CUDA Version:')[1].strip().split()[0]
-                    break
-                elif 'Driver Version:' in ln and not result['driver_version']:
-                    result['driver_version'] = ln.split('Driver Version:')[1].split()[0].strip()
+            # CUDA version is not available via --query-gpu; parse header
+            try:
+                smi = subprocess.check_output(
+                    ['nvidia-smi'], stderr=subprocess.STDOUT,
+                    universal_newlines=True, timeout=10
+                )
+                for ln in smi.split('\n'):
+                    if 'CUDA Version:' in ln:
+                        result['driver_cuda_version'] = ln.split('CUDA Version:')[1].strip().split()[0]
+                        # Also grab driver version from header as fallback
+                        if not result['driver_version'] and 'Driver Version:' in ln:
+                            result['driver_version'] = ln.split('Driver Version:')[1].split('CUDA')[0].strip().split()[0]
+                        break
+            except Exception:
+                pass
         except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
             pass
         except Exception:
