@@ -30,10 +30,7 @@ Device selection:
     --device is forwarded verbatim to Ultralytics; no pre-validation is
     performed, so any device string accepted by Ultralytics works
     (cuda, cpu, mps, xpu, intel:gpu, intel:npu, etc.).
-    When --device is omitted, a sensible default is chosen per format:
-        TensorRT  → cuda
-        OpenVINO  → intel:cpu
-        others    → Ultralytics auto-select
+    When --device is omitted, a sensible default is chosen by Ultralytics auto-select
 
 HTTP endpoints:
     /          → HTML viewer page with live stats overlay
