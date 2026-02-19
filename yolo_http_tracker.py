@@ -1407,9 +1407,9 @@ def parse_args():
             "YOLO HTTP-MJPEG Tracker v1.1.0 (Model-Driven Backend + Full-Task)\n\n"
             "Backend is selected automatically from the model file:\n"
             "  *.pt                → PyTorch  (Ultralytics auto-device)\n"
-            "  *.engine            → TensorRT (needs --device cuda or leave blank)\n"
-            "  *_openvino_model/   → OpenVINO (default device: intel:cpu)\n"
-            "  *.mlpackage         → CoreML   (macOS only)\n"
+            "  *.engine            → TensorRT \n"
+            "  *_openvino_model/   → OpenVINO \n"
+            "  *.mlpackage         → CoreML   \n"
             "  *.onnx              → ONNX Runtime\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
