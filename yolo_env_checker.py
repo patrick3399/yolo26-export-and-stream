@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-YOLO Environment Checker & Model Export Tool  v1.1.0
+YOLO Environment Checker & Model Export Tool
 
 Overview:
     Step 1 in the two-tool pipeline.
