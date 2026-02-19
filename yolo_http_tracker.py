@@ -669,19 +669,28 @@ class StreamingHandler(BaseHTTPRequestHandler):
 
     # ------------------------------------------------------------------
     def _serve_stream(self):
-        """Serve the MJPEG stream (multipart/x-mixed-replace boundary)."""
+        """Serve the MJPEG stream (multipart/x-mixed-replace boundary).
+
+        Fix: track last_sent_version so each JPEG is transmitted to the client
+        exactly once.  Without this guard the loop would re-send the same JPEG
+        at socket speed (thousands of times per second) while the inference
+        thread produces new frames at a much lower rate (e.g. 15 FPS), causing
+        CPU and bandwidth exhaustion and browser-side stuttering/crashes.
+        """
         self.send_response(200)
         self.send_header("Content-type", "multipart/x-mixed-replace; boundary=frame")
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.end_headers()
 
         self.server.tracker.monitor.add_client()
+        last_sent_version = -1
         try:
             while self.server.tracker.running:
-                jpeg = self.server.tracker.get_jpeg()
-                if jpeg is None:
-                    time.sleep(0.01)
+                jpeg, version = self.server.tracker.get_jpeg()
+                if jpeg is None or version == last_sent_version:
+                    time.sleep(0.005)
                     continue
+                last_sent_version = version
                 try:
                     self.wfile.write(b"--frame\r\n")
                     self.send_header("Content-type", "image/jpeg")
@@ -792,6 +801,12 @@ class YOLOTracker:
         # The encoding thread compares against this to avoid re-encoding the
         # same frame multiple times.
         self._frame_version: int = 0
+
+        # JPEG version counter: incremented each time latest_jpeg is updated
+        # by the encoding thread.  _serve_stream compares against this to
+        # avoid re-sending the same JPEG to HTTP clients (which would flood
+        # the network at socket speed rather than at inference speed).
+        self._jpeg_version: int = 0
 
         self._start_encoding_thread()
 
@@ -923,6 +938,7 @@ class YOLOTracker:
                 if ok:
                     with self.frame_lock:
                         self.latest_jpeg = buf.tobytes()
+                        self._jpeg_version += 1
 
         self.encode_thread = threading.Thread(target=_loop, daemon=True)
         self.encode_thread.start()
@@ -930,9 +946,15 @@ class YOLOTracker:
 
     # ──────────────────────────────────────────────────────────────────────────
     def get_jpeg(self):
-        """Return the latest encoded JPEG bytes (thread-safe)."""
+        """Return (jpeg_bytes, version) for the latest encoded frame (thread-safe).
+
+        version is an integer that increments each time a new JPEG is stored
+        by the encoding thread.  Callers can compare against a saved version
+        to detect whether a genuinely new frame is available without needing
+        to compare raw byte buffers.
+        """
         with self.frame_lock:
-            return self.latest_jpeg
+            return self.latest_jpeg, self._jpeg_version
 
     # ──────────────────────────────────────────────────────────────────────────
     def _draw_corner_box(self, img, x1, y1, x2, y2,
