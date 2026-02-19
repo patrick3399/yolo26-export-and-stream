@@ -852,6 +852,20 @@ class YOLOTracker:
                     self.filter_indices.append(name2idx[cls_name])
                 else:
                     print(f"⚠ Unknown class name: '{cls_name}'")
+            # Bug B fix: if the user specified --classes but every name was
+            # invalid, filter_indices stays empty.  Because [] is falsy, the
+            # inference call would receive classes=None (Ultralytics "no
+            # filter"), silently detecting ALL classes instead of nothing —
+            # the opposite of the user's intent.  Raise a clear error so the
+            # problem is immediately visible rather than producing confusing
+            # unfiltered output.
+            if not self.filter_indices:
+                valid_names = sorted(self.class_names.values())
+                raise ValueError(
+                    f"None of the requested class names are valid for this model.\n"
+                    f"  Requested : {self.filter_classes}\n"
+                    f"  Available : {valid_names}"
+                )
 
         # Warm-up pass — let Ultralytics handle all device/precision details
         print("🔥 Running warm-up pass …")
