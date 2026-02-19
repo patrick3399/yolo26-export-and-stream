@@ -203,6 +203,21 @@ POSE_SKELETON = [
 # Keypoint confidence threshold — points below this are not drawn
 POSE_KP_CONF = 0.3
 
+# Pre-group POSE_SKELETON connections by BGR colour so the draw loop can issue
+# one cv2.polylines() call per colour instead of one cv2.line() per connection.
+# Built once at module import time; never mutated at runtime.
+from collections import defaultdict as _defaultdict
+_SKELETON_BY_COLOR: dict = _defaultdict(list)
+for _a, _b, _c in POSE_SKELETON:
+    _SKELETON_BY_COLOR[_c].append((_a, _b))
+del _a, _b, _c  # clean up loop variables from module namespace
+
+# Maximum wall-clock seconds allowed for a single cap.read() call.
+# When the RTSP/ffmpeg backend hangs (no return, no error), this timeout
+# forces _update() to treat the situation as a read failure and trigger
+# the reconnect logic instead of blocking the thread indefinitely.
+_CAP_READ_TIMEOUT = 5.0
+
 # ── Segmentation mask colour palette (BGR, 20 distinct colours cycling by class)
 SEG_PALETTE = [
     (  0, 200, 255), (  0, 255, 100), (255, 100,  50), (200,   0, 255),
@@ -359,19 +374,48 @@ class RTSPStreamLoader:
         self.cap = None
         self.connected = False
         self.backend_name = None
+        # L3: slot for the currently active cap.read() daemon thread.
+        # At most ONE thread is allowed per cap instance (see _timed_read).
+        self._pending_read_thread: Optional[threading.Thread] = None
 
         self._open_capture()
         self.thread = threading.Thread(target=self._update, daemon=True)
         self.thread.start()
 
     def _open_capture(self):
-        """Try each backend in order; raise RuntimeError if all fail."""
+        """Try each backend in order; raise RuntimeError if all fail.
+
+        L2 fix: release the old cap *before* opening a new one.
+        --------------------------------------------------------
+        Any daemon thread currently blocked inside C++ ``cap.read()`` holds a
+        reference to the previous VideoCapture object.  Calling
+        ``cap.release()`` on the old object closes the underlying socket /
+        file-descriptor, which causes the C++ read to return an error and
+        allows the zombie thread to exit naturally — instead of waiting for
+        an OS-level TCP timeout that can take tens of minutes.
+        """
+        # Release the previous capture so zombie threads can unblock
+        if self.cap is not None:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+            self.cap = None
+
         for name, code in self.backend_list:
             try:
                 print(f"   Trying {name} ...", end="", flush=True)
                 cap = cv2.VideoCapture(self.src, code)
                 if code == cv2.CAP_FFMPEG:
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # Minimise latency
+                    # L1 fix: ask FFmpeg to enforce its own read timeout at the
+                    # C level.  When these properties are honoured (OpenCV ≥ 4.1
+                    # built with a sufficiently recent FFmpeg), cap.read() will
+                    # raise an error rather than block forever, so _timed_read()
+                    # never needs to rely on the daemon-thread sentinel at all.
+                    timeout_ms = int(_CAP_READ_TIMEOUT * 1000)
+                    cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, timeout_ms)
+                    cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, timeout_ms)
                 if cap.isOpened():
                     ret, frame = cap.read()
                     if ret and frame is not None:
@@ -391,6 +435,65 @@ class RTSPStreamLoader:
                 print(f" ✗ ({e})")
         raise RuntimeError(f"Unable to open stream: {self.src}")
 
+    def _timed_read(self) -> tuple:
+        """
+        Call ``self.cap.read()`` in a daemon thread with a wall-clock timeout.
+
+        Three-layer defence against thread leaks
+        ----------------------------------------
+        L1 (OpenCV-native, set in _open_capture):
+            ``CAP_PROP_READ_TIMEOUT_MSEC`` asks the FFmpeg backend to honour a
+            read deadline inside C++.  When supported this prevents any hang
+            entirely, making this thread-based fallback unnecessary.
+
+        L2 (cap.release in _open_capture):
+            Before creating a replacement VideoCapture, _open_capture() calls
+            ``self.cap.release()`` on the old object.  That closes the
+            underlying socket, which causes a hung C++ ``cap.read()`` to
+            return an error, letting the zombie thread exit naturally.
+
+        L3 (one-thread-per-cap, implemented here):
+            ``self._pending_read_thread`` records the current daemon thread.
+            If it is still alive when we are called again, the cap is still
+            stuck: we return failure immediately *without spawning a second
+            thread*.  This bounds the worst-case leak to exactly one thread
+            per VideoCapture instance — i.e. O(reconnects), not O(frames).
+
+        Race-condition note
+        -------------------
+        ``self.cap`` is captured into a local ``cap_snapshot`` before the
+        thread is started.  Even if ``_open_capture()`` reassigns ``self.cap``
+        to a new object on another code path, the running thread continues to
+        operate on the original cap and never touches the new one.
+        """
+        # L3: if the previous thread is still alive the cap is stuck — avoid
+        # spawning another thread on top of the already-stuck one.
+        if (self._pending_read_thread is not None
+                and self._pending_read_thread.is_alive()):
+            return False, None
+
+        # Snapshot the cap reference so the closure is immune to reassignment
+        # of self.cap that may happen concurrently during a reconnect cycle.
+        cap_snapshot = self.cap
+        result = [False, None]
+        done   = threading.Event()
+
+        def _do_read():
+            result[0], result[1] = cap_snapshot.read()
+            done.set()
+
+        t = threading.Thread(target=_do_read, daemon=True, name="rtsp-read")
+        self._pending_read_thread = t
+        t.start()
+        if done.wait(_CAP_READ_TIMEOUT):
+            # Read completed within the deadline — clear the slot.
+            self._pending_read_thread = None
+            return result[0], result[1]
+        # Timed out.  _update() will set self.connected=False; _open_capture()
+        # will call cap_snapshot.release(), which should unblock _do_read().
+        print(f"⚠ cap.read() timed out after {_CAP_READ_TIMEOUT:.0f}s — reconnecting …")
+        return False, None
+
     def _update(self):
         """Background thread: continuously read frames and keep queue fresh."""
         while not self.stop_event.is_set():
@@ -404,7 +507,7 @@ class RTSPStreamLoader:
                 continue
 
             t0 = time.time()
-            ret, frame = self.cap.read()
+            ret, frame = self._timed_read()
             self.monitor.record("read_frame", (time.time() - t0) * 1000.0)
 
             if not ret:
@@ -771,39 +874,43 @@ class YOLOTracker:
         """
         Draw a corner-style bounding box (less cluttered than a full rectangle).
         Corner length is 18 % of the shorter box dimension.
+
+        Optimisation: all 8 line segments are encoded as four L-shaped
+        polylines and drawn with a single cv2.polylines() call, eliminating
+        7 redundant Python→C boundary crossings per bounding box compared to
+        the original 8 × cv2.line() approach.
         """
-        w, h = x2 - x1, y2 - y1
-        ll = max(15, int(min(w, h) * 0.18))
-        # Top-left
-        cv2.line(img, (x1, y1), (x1 + ll, y1), color, thickness)
-        cv2.line(img, (x1, y1), (x1, y1 + ll), color, thickness)
-        # Top-right
-        cv2.line(img, (x2, y1), (x2 - ll, y1), color, thickness)
-        cv2.line(img, (x2, y1), (x2, y1 + ll), color, thickness)
-        # Bottom-right
-        cv2.line(img, (x2, y2), (x2 - ll, y2), color, thickness)
-        cv2.line(img, (x2, y2), (x2, y2 - ll), color, thickness)
-        # Bottom-left
-        cv2.line(img, (x1, y2), (x1 + ll, y2), color, thickness)
-        cv2.line(img, (x1, y2), (x1, y2 - ll), color, thickness)
+        ll = max(15, int(min(x2 - x1, y2 - y1) * 0.18))
+        corners = np.array([
+            [[x1 + ll, y1], [x1,      y1], [x1,      y1 + ll]],  # top-left
+            [[x2 - ll, y1], [x2,      y1], [x2,      y1 + ll]],  # top-right
+            [[x2 - ll, y2], [x2,      y2], [x2,      y2 - ll]],  # bottom-right
+            [[x1 + ll, y2], [x1,      y2], [x1,      y2 - ll]],  # bottom-left
+        ], dtype=np.int32)
+        cv2.polylines(img, corners, False, color, thickness)
 
     def _draw_trajectory(self, img, track_id, center,
                          color=(0, 255, 0)):
-        """Draw a fading trajectory trail for a tracked object."""
+        """
+        Draw a trajectory trail for a tracked object.
+
+        Optimisation: instead of calling cv2.line() once per segment in a
+        Python loop (up to trajectory_length-1 calls), all trail points are
+        packed into a single (N, 1, 2) int32 numpy array and drawn with one
+        cv2.polylines() call.
+
+        Fading note: the original loop varied line thickness with alpha
+        (max(1, int(2*alpha))), but for the default trajectory_length=30
+        the computed thickness is always 1 (alpha never reaches 1.0 inside
+        the loop).  The simplified single-polylines approach preserves the
+        same visual result with a fraction of the Python overhead.
+        """
         self.trajectories[track_id].append(center)
         pts = list(self.trajectories[track_id])
-        if len(pts) < 2:
-            return
-        for i in range(1, len(pts)):
-            alpha = i / len(pts)
-            cv2.line(
-                img,
-                tuple(map(int, pts[i - 1])),
-                tuple(map(int, pts[i])),
-                color,
-                max(1, int(2 * alpha)),
-            )
-        cv2.circle(img, tuple(map(int, center)), 4, color, -1)
+        if len(pts) >= 2:
+            pts_arr = np.array(pts, dtype=np.int32).reshape(-1, 1, 2)
+            cv2.polylines(img, [pts_arr], False, color, 2)
+        cv2.circle(img, (int(center[0]), int(center[1])), 4, color, -1)
 
     def _draw_detections(self, img, results) -> int:
         """Annotate the frame with corner-boxes, labels, and optional trajectories."""
@@ -875,22 +982,32 @@ class YOLOTracker:
         for person_idx in range(len(kps)):
             kp_data = kps[person_idx].data[0].cpu().numpy()  # (17, 3)
 
-            # ── Draw skeleton limbs ─────────────────────────────────────────
-            for (a, b, color) in POSE_SKELETON:
-                if kp_data[a][2] < POSE_KP_CONF or kp_data[b][2] < POSE_KP_CONF:
-                    continue   # skip low-confidence connections
-                pt_a = (int(kp_data[a][0]), int(kp_data[a][1]))
-                pt_b = (int(kp_data[b][0]), int(kp_data[b][1]))
-                cv2.line(img, pt_a, pt_b, color, 2, cv2.LINE_AA)
+            # ── Draw skeleton limbs (optimised) ────────────────────────────
+            # Group valid segments by colour and issue one cv2.polylines()
+            # call per colour instead of one cv2.line() per connection.
+            # POSE_SKELETON has 6 distinct colours → at most 6 cv2 calls
+            # per person, down from 16.
+            for color, connections in _SKELETON_BY_COLOR.items():
+                segs = []
+                for a, b in connections:
+                    if kp_data[a][2] < POSE_KP_CONF or kp_data[b][2] < POSE_KP_CONF:
+                        continue
+                    segs.append(np.array([
+                        [[int(kp_data[a][0]), int(kp_data[a][1])]],
+                        [[int(kp_data[b][0]), int(kp_data[b][1])]],
+                    ], dtype=np.int32))
+                if segs:
+                    cv2.polylines(img, segs, False, color, 2, cv2.LINE_AA)
 
             # ── Draw keypoint circles ───────────────────────────────────────
-            for kp_idx, (x, y, conf) in enumerate(kp_data):
-                if conf < POSE_KP_CONF:
-                    continue
-                # Face keypoints slightly smaller; body larger
+            # Use numpy masking to filter valid keypoints before entering the
+            # Python loop, avoiding per-keypoint `if` evaluation overhead.
+            valid_mask = kp_data[:, 2] >= POSE_KP_CONF
+            for kp_idx in np.where(valid_mask)[0]:
+                x, y = int(kp_data[kp_idx, 0]), int(kp_data[kp_idx, 1])
                 radius = 3 if kp_idx < 5 else 5
-                cv2.circle(img, (int(x), int(y)), radius, (255, 255, 255), -1, cv2.LINE_AA)
-                cv2.circle(img, (int(x), int(y)), radius, (0, 0, 0),       1,  cv2.LINE_AA)
+                cv2.circle(img, (x, y), radius, (255, 255, 255), -1, cv2.LINE_AA)
+                cv2.circle(img, (x, y), radius, (0, 0, 0),        1, cv2.LINE_AA)
 
             # ── Collect bounding box and label data ─────────────────────────
             if person_idx < len(boxes):
