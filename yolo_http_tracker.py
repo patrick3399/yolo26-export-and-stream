@@ -708,7 +708,7 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 
 class YOLOTracker:
     """
-    YOLO HTTP-MJPEG Tracker  v1.1.0
+    YOLO HTTP-MJPEG Tracker
 
     Combines model-format detection, task detection, RTSP/webcam reading,
     YOLO inference, annotation, and HTTP serving into a single pipeline.
@@ -723,11 +723,7 @@ class YOLOTracker:
         1. Detect backend from model path (detect_model_format()).
         2. If --device provided → pass verbatim to every predict/track call.
            No validation; Ultralytics raises a clear error for invalid values.
-        3. If --device NOT provided (empty string):
-           • pytorch / unknown  → omit device kwarg (Ultralytics auto-select)
-           • tensorrt           → device="cuda"
-           • openvino           → device="intel:cpu"
-           • coreml / onnx      → omit device kwarg
+        3. If --device NOT provided (empty string): Ultralytics auto-select
     """
 
     def __init__(self, args):
