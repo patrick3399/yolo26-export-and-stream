@@ -690,7 +690,8 @@ class StreamingHandler(BaseHTTPRequestHandler):
                     self.end_headers()
                     self.wfile.write(jpeg)
                     self.wfile.write(b"\r\n")
-                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError,
+                        OSError):
                     break
         finally:
             self.server.tracker.monitor.remove_client()
@@ -1021,12 +1022,14 @@ class YOLOTracker:
         # Single overlay for all semi-transparent label backgrounds
         overlay = img.copy()
         for x1, y1, tw, th, _ in det_data:
-            cv2.rectangle(overlay, (x1, y1 - th - 12), (x1 + tw + 12, y1), (0, 255, 0), -1)
+            y_label = y1 if y1 - th - 12 > 0 else y1 + th + 12
+            cv2.rectangle(overlay, (x1, y_label - th - 12), (x1 + tw + 12, y_label), (0, 255, 0), -1)
         cv2.addWeighted(overlay, 0.6, img, 0.4, 0, img)
 
         # Draw text on top of the blended image
-        for x1, y1, _, _, label in det_data:
-            cv2.putText(img, label, (x1 + 6, y1 - 6), font, scale, (255, 255, 255), thick, cv2.LINE_AA)
+        for x1, y1, tw, th, label in det_data:
+            y_label = y1 if y1 - th - 12 > 0 else y1 + th + 12
+            cv2.putText(img, label, (x1 + 6, y_label - 6), font, scale, (255, 255, 255), thick, cv2.LINE_AA)
 
         return len(det_data)
 
@@ -1110,11 +1113,13 @@ class YOLOTracker:
         if label_data:
             overlay = img.copy()
             for x1, y1, tw, th, _ in label_data:
-                cv2.rectangle(overlay, (x1, y1 - th - 10), (x1 + tw + 10, y1),
+                y_label = y1 if y1 - th - 10 > 0 else y1 + th + 10
+                cv2.rectangle(overlay, (x1, y_label - th - 10), (x1 + tw + 10, y_label),
                               (255, 220, 50), -1)
             cv2.addWeighted(overlay, 0.6, img, 0.4, 0, img)
-            for x1, y1, _, _, label in label_data:
-                cv2.putText(img, label, (x1 + 5, y1 - 5),
+            for x1, y1, tw, th, label in label_data:
+                y_label = y1 if y1 - th - 10 > 0 else y1 + th + 10
+                cv2.putText(img, label, (x1 + 5, y_label - 5),
                             font, scale, (0, 0, 0), thick, cv2.LINE_AA)
 
         return num
@@ -1213,11 +1218,13 @@ class YOLOTracker:
             if label_data:
                 lbl_overlay = img.copy()
                 for x1, y1, tw, th, _, color in label_data:
-                    cv2.rectangle(lbl_overlay, (x1, y1 - th - 10),
-                                  (x1 + tw + 10, y1), color, -1)
+                    y_label = y1 if y1 - th - 10 > 0 else y1 + th + 10
+                    cv2.rectangle(lbl_overlay, (x1, y_label - th - 10),
+                                  (x1 + tw + 10, y_label), color, -1)
                 cv2.addWeighted(lbl_overlay, 0.65, img, 0.35, 0, img)
-                for x1, y1, _, _, label, _ in label_data:
-                    cv2.putText(img, label, (x1 + 5, y1 - 5),
+                for x1, y1, tw, th, label, _ in label_data:
+                    y_label = y1 if y1 - th - 10 > 0 else y1 + th + 10
+                    cv2.putText(img, label, (x1 + 5, y_label - 5),
                                 font, scale, (255, 255, 255), thick, cv2.LINE_AA)
 
             num = len(masks)  # count all drawn masks, not just labelled boxes
