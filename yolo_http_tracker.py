@@ -197,7 +197,8 @@ POSE_SKELETON = [
     (14, 16, (50, 180, 255)),
 ]
 
-# Keypoint confidence threshold — points below this are not drawn
+# Default keypoint confidence threshold — overridden at runtime by --pose-kp-conf.
+# Kept here as a module-level reference; actual value lives in YOLOTracker.pose_kp_conf.
 POSE_KP_CONF = 0.3
 
 # Pre-group POSE_SKELETON connections by BGR colour so the draw loop can issue
@@ -741,6 +742,7 @@ class YOLOTracker:
         self.trajectory_length = args.trajectory_length
         self.filter_classes    = args.classes or []
         self.input_src         = args.input
+        self.pose_kp_conf      = args.pose_kp_conf
 
         # ── Detect model format ──────────────────────────────────────────────
         self.model_format    = detect_model_format(self.model_name)
@@ -1038,7 +1040,7 @@ class YOLOTracker:
           2. Draw a filled circle at each visible keypoint.
           3. Draw the bounding box and label (same style as detection).
 
-        Keypoints below POSE_KP_CONF confidence are skipped entirely so that
+        Keypoints below self.pose_kp_conf confidence are skipped entirely so that
         partially-visible people do not produce phantom limbs.
         """
         if not results or not results[0].keypoints:
@@ -1064,7 +1066,7 @@ class YOLOTracker:
             for color, connections in _SKELETON_BY_COLOR.items():
                 segs = []
                 for a, b in connections:
-                    if kp_data[a][2] < POSE_KP_CONF or kp_data[b][2] < POSE_KP_CONF:
+                    if kp_data[a][2] < self.pose_kp_conf or kp_data[b][2] < self.pose_kp_conf:
                         continue
                     segs.append(np.array([
                         [[int(kp_data[a][0]), int(kp_data[a][1])]],
@@ -1076,7 +1078,7 @@ class YOLOTracker:
             # ── Draw keypoint circles ───────────────────────────────────────
             # Use numpy masking to filter valid keypoints before entering the
             # Python loop, avoiding per-keypoint `if` evaluation overhead.
-            valid_mask = kp_data[:, 2] >= POSE_KP_CONF
+            valid_mask = kp_data[:, 2] >= self.pose_kp_conf
             for kp_idx in np.where(valid_mask)[0]:
                 x, y = int(kp_data[kp_idx, 0]), int(kp_data[kp_idx, 1])
                 radius = 3 if kp_idx < 5 else 5
@@ -1175,13 +1177,19 @@ class YOLOTracker:
         for contours, color in contour_list:
             cv2.drawContours(img, contours, -1, color, 2)
 
-        # Draw boxes and labels on top of the blended masks
+        # Draw boxes and labels on top of the blended masks.
+        # Guard: only draw a box/label when the same index has a rendered mask.
+        # This prevents visual inconsistency when len(boxes) != len(masks), e.g.
+        # when TensorRT precision loss yields extra boxes without masks or vice versa.
         if boxes is not None:
             font = cv2.FONT_HERSHEY_SIMPLEX
             scale, thick = 0.75, 2
             label_data = []
 
-            for b in boxes:
+            for i, b in enumerate(boxes):
+                if i >= len(masks):
+                    # No rendered mask for this box index — skip to stay consistent.
+                    continue
                 cls_id  = int(b.cls[0])
                 conf    = float(b.conf[0])
                 x1, y1, x2, y2 = map(int, b.xyxy[0].cpu().numpy())
@@ -1212,7 +1220,7 @@ class YOLOTracker:
                     cv2.putText(img, label, (x1 + 5, y1 - 5),
                                 font, scale, (255, 255, 255), thick, cv2.LINE_AA)
 
-            num = len(label_data)
+            num = len(masks)  # count all drawn masks, not just labelled boxes
         return num
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -1447,6 +1455,9 @@ def parse_args():
                         help="JPEG encoding quality (0–100)")
     parser.add_argument("--classes",           nargs="+", type=str,
                         help="Filter detections to these class names, e.g. --classes person car")
+    parser.add_argument("--pose-kp-conf",      type=float, default=0.3,
+                        help="Keypoint confidence threshold for pose estimation (0.0–1.0); "
+                             "keypoints below this value are not drawn (default: 0.3)")
     return parser.parse_args()
 
 
