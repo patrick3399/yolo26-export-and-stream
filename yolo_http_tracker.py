@@ -252,6 +252,7 @@ class PerformanceMonitor:
             for k in ("read_frame", "inference", "draw", "encode", "total")
         }
         self.lock = threading.Lock()
+        self.received_frames = 0
         self.frame_count = 0
         self.dropped_frames = 0
         self.current_fps = 0.0
@@ -263,7 +264,13 @@ class PerformanceMonitor:
         with self.lock:
             self.times[category].append(duration_ms)
 
+    def record_received(self):
+        """A frame was dequeued by the consumer (may still be skipped)."""
+        with self.lock:
+            self.received_frames += 1
+
     def record_frame(self):
+        """A frame went through full inference + draw pipeline."""
         with self.lock:
             self.frame_count += 1
 
@@ -292,6 +299,11 @@ class PerformanceMonitor:
             return self.client_count
 
     def get_stats(self) -> dict:
+        # Snapshot values guarded by other locks BEFORE acquiring self.lock
+        # to avoid nested lock acquisition (self.lock → fps_lock/client_lock).
+        fps          = self.get_fps()
+        client_count = self.get_client_count()
+
         with self.lock:
             stats = {}
             for cat, series in self.times.items():
@@ -309,13 +321,14 @@ class PerformanceMonitor:
 
             stats["frame_count"]    = self.frame_count
             stats["dropped_frames"] = self.dropped_frames
-            total_received = self.frame_count + self.dropped_frames
+            total_received = self.received_frames + self.dropped_frames
             stats["drop_rate"]      = (
                 self.dropped_frames / total_received * 100.0
                 if total_received > 0 else 0.0
             )
-            stats["client_count"] = self.get_client_count()
-            stats["fps"]          = self.get_fps()
+
+        stats["client_count"] = client_count
+        stats["fps"]          = fps
         return stats
 
     def print_report(self):
@@ -753,7 +766,7 @@ class YOLOTracker:
 
     def __init__(self, args):
         self.args = args
-        self.running = False
+        self._stop_event = threading.Event()  # thread-safe running flag
         self.model_name  = args.model
         self.tracker_cfg = args.tracker
         self.port        = args.port
@@ -824,6 +837,18 @@ class YOLOTracker:
         self._jpeg_version: int = 0
 
         self._start_encoding_thread()
+
+    # ── Thread-safe running property backed by threading.Event ────────────
+    @property
+    def running(self) -> bool:
+        return not self._stop_event.is_set()
+
+    @running.setter
+    def running(self, value: bool):
+        if value:
+            self._stop_event.clear()
+        else:
+            self._stop_event.set()
 
     # ──────────────────────────────────────────────────────────────────────────
     def _print_diagnostic(self):
@@ -1030,7 +1055,7 @@ class YOLOTracker:
         2 × trajectory_length frames is considered gone and is removed from
         both self.trajectories and self._trajectory_last_seen.
         """
-        stale_threshold = self._traj_frame_cnt - self.trajectory_length * 2
+        stale_threshold = max(0, self._traj_frame_cnt - self.trajectory_length * 2)
         stale_ids = [
             tid for tid, last_frame in self._trajectory_last_seen.items()
             if last_frame < stale_threshold
@@ -1331,12 +1356,14 @@ class YOLOTracker:
                 if frame is None:
                     continue
 
-                self.monitor.record_frame()
+                self.monitor.record_received()
                 frame_cnt += 1
 
                 # Skip frames if frame_skip > 1
                 if self.frame_skip > 1 and (frame_cnt % self.frame_skip) != 0:
                     continue
+
+                self.monitor.record_frame()
 
                 # ── Inference ──────────────────────────────────────────────────
                 inf_t0 = time.time()
