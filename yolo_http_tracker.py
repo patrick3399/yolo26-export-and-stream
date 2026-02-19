@@ -732,14 +732,9 @@ class YOLOTracker:
             self._device_kwarg = user_device
             self.device_label  = user_device
         else:
-            # Auto-resolve per format
-            defaults = {
-                "tensorrt": "cuda",
-                "openvino": "intel:cpu",
-            }
-            auto = defaults.get(self.model_format, None)
-            self._device_kwarg = auto          # None → omit from kwargs
-            self.device_label  = auto or "auto (Ultralytics)"
+            # Let Ultralytics auto-select the best device for any format
+            self._device_kwarg = None          # None → omit from kwargs
+            self.device_label  = "auto (Ultralytics)"
 
         # ── Pipeline state ───────────────────────────────────────────────────
         self.monitor       = PerformanceMonitor()
@@ -823,7 +818,17 @@ class YOLOTracker:
 
         # Warm-up pass — let Ultralytics handle all device/precision details
         print("🔥 Running warm-up pass …")
-        dummy = np.zeros((640, 640, 3), dtype=np.uint8)
+        # Use the model's expected input size (critical for static-shape
+        # TensorRT engines that reject mismatched dimensions).
+        try:
+            meta_imgsz = self.model.overrides.get('imgsz', 640)
+            if isinstance(meta_imgsz, (list, tuple)):
+                wh, ww = int(meta_imgsz[0]), int(meta_imgsz[-1])
+            else:
+                wh = ww = int(meta_imgsz)
+        except Exception:
+            wh = ww = 640
+        dummy = np.zeros((wh, ww, 3), dtype=np.uint8)
         device_kw = self._build_device_kwargs()
         t0 = time.time()
         try:
