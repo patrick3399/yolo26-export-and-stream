@@ -433,6 +433,11 @@ class RTSPStreamLoader:
                         self.cap = cap
                         self.backend_name = name
                         self.connected = True
+                        # Clear the zombie-thread slot so that _timed_read()'s
+                        # L3 guard does not block reads on the brand-new cap.
+                        # The old thread operates on cap_snapshot (already
+                        # released above) and will exit on its own.
+                        self._pending_read_thread = None
                         w   = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                         h   = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                         fps = cap.get(cv2.CAP_PROP_FPS)
@@ -1460,7 +1465,12 @@ def main():
     if isinstance(args.input, str) and args.input.isdigit():
         args.input = int(args.input)
 
-    tracker = YOLOTracker(args)
+    try:
+        tracker = YOLOTracker(args)
+    except Exception as e:
+        print(f"[Fatal] Failed to initialise tracker: {e}", file=sys.stderr)
+        sys.exit(1)
+
     tracker.run()
 
 
