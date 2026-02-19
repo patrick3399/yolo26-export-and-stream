@@ -394,13 +394,27 @@ class RTSPStreamLoader:
         allows the zombie thread to exit naturally — instead of waiting for
         an OS-level TCP timeout that can take tens of minutes.
         """
-        # Release the previous capture so zombie threads can unblock
+        # Fix 4: release the previous capture asynchronously so that a hung
+        # USB/V4L2/MSMF driver (where cap.release() itself can block forever)
+        # does not freeze the _update thread and prevent reconnection.
+        # The old cap object is handed off to a short-lived daemon thread;
+        # even if that thread blocks indefinitely it has no impact on the
+        # main read/reconnect loop.  Python's GC will eventually collect the
+        # object if the thread never returns.
         if self.cap is not None:
-            try:
-                self.cap.release()
-            except Exception:
-                pass
+            old_cap = self.cap
             self.cap = None
+
+            def _async_release(cap):
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+
+            threading.Thread(
+                target=_async_release, args=(old_cap,),
+                daemon=True, name="cap-release",
+            ).start()
 
         for name, code in self.backend_list:
             try:
@@ -543,8 +557,22 @@ class RTSPStreamLoader:
         self.stop_event.set()
         if self.thread.is_alive():
             self.thread.join(timeout=2.0)
-        if self.cap and self.cap.isOpened():
-            self.cap.release()
+        # Fix 4: same async-release pattern as _open_capture to guard against
+        # a driver-level hang on shutdown.
+        if self.cap is not None:
+            old_cap = self.cap
+            self.cap = None
+
+            def _async_release(cap):
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+
+            threading.Thread(
+                target=_async_release, args=(old_cap,),
+                daemon=True, name="cap-release-stop",
+            ).start()
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -755,6 +783,15 @@ class YOLOTracker:
             self.trajectories: dict = defaultdict(
                 lambda: deque(maxlen=self.trajectory_length)
             )
+            # Track the last-seen draw-frame index for each track_id so that
+            # entries belonging to objects that left the scene can be purged.
+            self._trajectory_last_seen: dict = {}
+            self._traj_frame_cnt: int = 0
+
+        # Frame version counter: incremented each time latest_frame is updated.
+        # The encoding thread compares against this to avoid re-encoding the
+        # same frame multiple times.
+        self._frame_version: int = 0
 
         self._start_encoding_thread()
 
@@ -842,14 +879,24 @@ class YOLOTracker:
 
     # ──────────────────────────────────────────────────────────────────────────
     def _start_encoding_thread(self):
-        """Start a background thread that converts frames to JPEG bytes."""
+        """Start a background thread that converts frames to JPEG bytes.
+
+        Fix: tracks _frame_version so the thread only encodes when a *new*
+        frame has been written by process_loop.  Without this guard the loop
+        would re-encode the same latest_frame at full CPU speed (potentially
+        100+ times per inference frame), wasting an entire core and flooding
+        HTTP clients with duplicate JPEGs.
+        """
         def _loop():
+            last_encoded_version = -1
             while not self.stop_encode_event.is_set():
                 with self.frame_lock:
-                    if self.latest_frame is None:
+                    current_version = self._frame_version
+                    if self.latest_frame is None or current_version == last_encoded_version:
                         frame = None
                     else:
                         frame = self.latest_frame.copy()
+                        last_encoded_version = current_version
                 if frame is None:
                     time.sleep(0.01)
                     continue
@@ -911,11 +958,35 @@ class YOLOTracker:
         same visual result with a fraction of the Python overhead.
         """
         self.trajectories[track_id].append(center)
+        # Fix 1: record which draw-frame this track_id was last active in so
+        # that _cleanup_trajectories() can evict entries for objects that have
+        # left the scene and whose track_id will never appear again.
+        self._trajectory_last_seen[track_id] = self._traj_frame_cnt
         pts = list(self.trajectories[track_id])
         if len(pts) >= 2:
             pts_arr = np.array(pts, dtype=np.int32).reshape(-1, 1, 2)
             cv2.polylines(img, [pts_arr], False, color, 2)
         cv2.circle(img, (int(center[0]), int(center[1])), 4, color, -1)
+
+    def _cleanup_trajectories(self):
+        """Evict trajectory entries for track IDs not seen recently.
+
+        Fix 1 (memory leak): BotSORT/ByteTrack assign monotonically increasing
+        track_ids; the defaultdict would otherwise grow without bound over days
+        of continuous operation, eventually exhausting system RAM.
+
+        Any track_id whose last-seen draw-frame is older than
+        2 × trajectory_length frames is considered gone and is removed from
+        both self.trajectories and self._trajectory_last_seen.
+        """
+        stale_threshold = self._traj_frame_cnt - self.trajectory_length * 2
+        stale_ids = [
+            tid for tid, last_frame in self._trajectory_last_seen.items()
+            if last_frame < stale_threshold
+        ]
+        for tid in stale_ids:
+            del self.trajectories[tid]
+            del self._trajectory_last_seen[tid]
 
     def _draw_detections(self, img, results) -> int:
         """Annotate the frame with corner-boxes, labels, and optional trajectories."""
@@ -1083,7 +1154,11 @@ class YOLOTracker:
             mask_bin = cv2.resize(mask_np, (w, h),
                                   interpolation=cv2.INTER_LINEAR) > 0.5
 
-            cls_id = int(boxes[i].cls[0]) if boxes is not None else i
+            # Fix 5: guard against len(masks) > len(boxes), which can occur
+            # with custom-trained TensorRT models where precision loss during
+            # post-processing produces more mask entries than box entries.
+            # Without this check boxes[i] raises IndexError and kills the loop.
+            cls_id = int(boxes[i].cls[0]) if (boxes is not None and i < len(boxes)) else i
             color  = SEG_PALETTE[cls_id % len(SEG_PALETTE)]
 
             overlay[mask_bin] = color
@@ -1151,95 +1226,134 @@ class YOLOTracker:
             'detect'  → _draw_detections()
             'pose'    → _draw_pose()
             'segment' → _draw_masks()  (includes box/label overlay)
+
+        Fix 3: the entire loop body is wrapped in try/except so that a fatal
+        error (e.g. RTSPStreamLoader raising RuntimeError for an invalid RTSP
+        URL) does not silently kill this daemon thread while the main thread
+        keeps running — resulting in a zombie process with a blank HTTP stream.
+        On any unhandled exception self.running is set to False via the
+        finally block, which causes the main thread's keep-alive loop to exit
+        and the process to terminate cleanly.
         """
         print("\n" + "=" * 70)
         print(f"✔ YOLO processing started  [{self.task_label}]  (v1.1.0)")
         print("=" * 70)
         print("Press Ctrl+C to stop and view performance report\n")
 
-        self.loader = RTSPStreamLoader(self.input_src, monitor=self.monitor)
+        try:
+            # Fix 3: RTSPStreamLoader can raise RuntimeError (bad RTSP URL /
+            # camera disconnected at startup).  Without this try/except the
+            # exception would silently kill this daemon thread.
+            self.loader = RTSPStreamLoader(self.input_src, monitor=self.monitor)
 
-        device_kw     = self._build_device_kwargs()
-        frame_cnt     = 0
-        fps_tick      = time.time()
-        fps_cnt       = 0
+            device_kw     = self._build_device_kwargs()
+            frame_cnt     = 0
+            draw_cnt      = 0
+            fps_tick      = time.time()
+            fps_cnt       = 0
 
-        while self.running:
-            # Pause processing when no client is connected (saves CPU/GPU)
-            if self.monitor.get_client_count() == 0:
-                time.sleep(0.5)
-                continue
+            while self.running:
+                # Pause processing when no client is connected (saves CPU/GPU)
+                if self.monitor.get_client_count() == 0:
+                    time.sleep(0.5)
+                    continue
 
-            loop_t0 = time.time()
+                loop_t0 = time.time()
 
-            frame = self.loader.read()
-            if frame is None:
-                continue
+                frame = self.loader.read()
+                if frame is None:
+                    continue
 
-            self.monitor.record_frame()
-            frame_cnt += 1
+                self.monitor.record_frame()
+                frame_cnt += 1
 
-            # Skip frames if frame_skip > 1
-            if self.frame_skip > 1 and (frame_cnt % self.frame_skip) != 0:
-                continue
+                # Skip frames if frame_skip > 1
+                if self.frame_skip > 1 and (frame_cnt % self.frame_skip) != 0:
+                    continue
 
-            # ── Inference ──────────────────────────────────────────────────
-            inf_t0 = time.time()
-            try:
-                results = self.model.track(
-                    frame,
-                    persist=True,
-                    tracker=self.tracker_cfg,
-                    conf=self.conf_thres,
-                    iou=self.iou_thres,
-                    classes=self.filter_indices if self.filter_indices else None,
-                    verbose=False,
-                    **device_kw,
-                )
-                self.monitor.record("inference", (time.time() - inf_t0) * 1000.0)
-            except Exception as e:
-                print(f"⚠ Inference error: {e}")
-                continue
+                # ── Inference ──────────────────────────────────────────────────
+                inf_t0 = time.time()
+                try:
+                    results = self.model.track(
+                        frame,
+                        persist=True,
+                        tracker=self.tracker_cfg,
+                        conf=self.conf_thres,
+                        iou=self.iou_thres,
+                        classes=self.filter_indices if self.filter_indices else None,
+                        verbose=False,
+                        **device_kw,
+                    )
+                    self.monitor.record("inference", (time.time() - inf_t0) * 1000.0)
+                except Exception as e:
+                    print(f"⚠ Inference error: {e}")
+                    continue
 
-            # ── Draw annotations (task-specific) ──────────────────────────
-            draw_t0   = time.time()
-            annotated = frame.copy()
+                # ── Draw annotations (task-specific) ──────────────────────────
+                draw_t0   = time.time()
+                annotated = frame.copy()
 
-            if self.model_task == 'pose':
-                num_obj = self._draw_pose(annotated, results)
-            elif self.model_task == 'segment':
-                num_obj = self._draw_masks(annotated, results)
-            else:
-                # Default: detection / tracking
-                num_obj = self._draw_detections(annotated, results)
+                if self.model_task == 'pose':
+                    num_obj = self._draw_pose(annotated, results)
+                elif self.model_task == 'segment':
+                    num_obj = self._draw_masks(annotated, results)
+                else:
+                    # Default: detection / tracking
+                    num_obj = self._draw_detections(annotated, results)
 
-            self.monitor.record("draw", (time.time() - draw_t0) * 1000.0)
+                self.monitor.record("draw", (time.time() - draw_t0) * 1000.0)
 
-            with self.frame_lock:
-                self.latest_frame = annotated
+                # Fix 1: advance trajectory frame counter and periodically
+                # purge stale track_id entries to prevent unbounded growth.
+                if self.trajectory:
+                    draw_cnt += 1
+                    self._traj_frame_cnt = draw_cnt
+                    if draw_cnt % 100 == 0:
+                        self._cleanup_trajectories()
 
-            self.monitor.record("total", (time.time() - loop_t0) * 1000.0)
+                # Fix 2: increment _frame_version so the encoding thread knows
+                # a genuinely new frame is available and avoids re-encoding the
+                # same latest_frame at CPU-maximum speed between inference calls.
+                with self.frame_lock:
+                    self.latest_frame = annotated
+                    self._frame_version += 1
 
-            # ── FPS counter (updated every second) ─────────────────────────
-            fps_cnt += 1
-            if time.time() - fps_tick >= 1.0:
-                self.monitor.update_fps(fps_cnt)
-                fps_cnt  = 0
-                fps_tick = time.time()
+                self.monitor.record("total", (time.time() - loop_t0) * 1000.0)
 
-            if frame_cnt % 100 == 0:
-                s = self.monitor.get_stats()
-                print(
-                    f"[{frame_cnt:6d}] FPS={s['fps']:5.1f} | "
-                    f"Inf={s['inference']['avg']:6.1f}ms | "
-                    f"Obj={num_obj} | Clients={s['client_count']}"
-                )
+                # ── FPS counter (updated every second) ─────────────────────────
+                fps_cnt += 1
+                if time.time() - fps_tick >= 1.0:
+                    self.monitor.update_fps(fps_cnt)
+                    fps_cnt  = 0
+                    fps_tick = time.time()
 
-        self.loader.stop()
-        self.stop_encode_event.set()
-        if self.encode_thread and self.encode_thread.is_alive():
-            self.encode_thread.join(timeout=2.0)
-        self.monitor.print_report()
+                if frame_cnt % 100 == 0:
+                    s = self.monitor.get_stats()
+                    print(
+                        f"[{frame_cnt:6d}] FPS={s['fps']:5.1f} | "
+                        f"Inf={s['inference']['avg']:6.1f}ms | "
+                        f"Obj={num_obj} | Clients={s['client_count']}"
+                    )
+
+        except Exception as e:
+            # Fix 3: report the fatal error so the user sees what went wrong
+            # instead of just a blank HTTP stream with no explanation.
+            print(f"\n❌ Fatal error in processing thread: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            # Fix 3: always signal the main thread to stop so the process
+            # does not become a zombie when this thread dies unexpectedly.
+            self.running = False
+            if hasattr(self, 'loader'):
+                try:
+                    self.loader.stop()
+                except Exception:
+                    pass
+            self.stop_encode_event.set()
+            if self.encode_thread and self.encode_thread.is_alive():
+                self.encode_thread.join(timeout=2.0)
+            self.monitor.print_report()
 
     # ──────────────────────────────────────────────────────────────────────────
     def run(self):
