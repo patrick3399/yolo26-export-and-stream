@@ -65,8 +65,8 @@ import threading
 import time
 from collections import defaultdict, deque
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
 from socketserver import ThreadingMixIn
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -171,40 +171,40 @@ def task_display_name(task: str) -> str:
 #                 9=left_wrist 10=right_wrist 11=left_hip 12=right_hip
 #                13=left_knee 14=right_knee 15=left_ankle 16=right_ankle
 POSE_SKELETON = [
-    # Face
-    (0, 1,  (255, 220,  50)),
-    (0, 2,  (255, 220,  50)),
-    (1, 3,  (255, 220,  50)),
-    (2, 4,  (255, 220,  50)),
-    # Shoulder bar
-    (5, 6,  (0, 200, 255)),
-    # Left arm
-    (5, 7,  (0, 200, 255)),
-    (7, 9,  (0, 200, 255)),
-    # Right arm
-    (6, 8,  (255, 100, 100)),
-    (8, 10, (255, 100, 100)),
-    # Torso
+    # Face — yellow
+    (0, 1,  (50, 220, 255)),
+    (0, 2,  (50, 220, 255)),
+    (1, 3,  (50, 220, 255)),
+    (2, 4,  (50, 220, 255)),
+    # Shoulder bar — cyan (grouped with left arm)
+    (5, 6,  (255, 200, 0)),
+    # Left arm — cyan
+    (5, 7,  (255, 200, 0)),
+    (7, 9,  (255, 200, 0)),
+    # Right arm — red/pink
+    (6, 8,  (100, 100, 255)),
+    (8, 10, (100, 100, 255)),
+    # Torso — grey
     (5, 11, (180, 180, 180)),
     (6, 12, (180, 180, 180)),
-    # Hip bar
+    # Hip bar — grey
     (11, 12, (180, 180, 180)),
-    # Left leg
+    # Left leg — green
     (11, 13, (100, 255, 100)),
     (13, 15, (100, 255, 100)),
-    # Right leg
-    (12, 14, (50, 180, 255)),
-    (14, 16, (50, 180, 255)),
+    # Right leg — blue
+    (12, 14, (255, 180, 50)),
+    (14, 16, (255, 180, 50)),
 ]
 
-# Keypoint confidence threshold — points below this are not drawn
+# Default keypoint confidence threshold — overridden at runtime by --pose-kp-conf.
+# Kept here as a module-level reference; actual value lives in YOLOTracker.pose_kp_conf.
 POSE_KP_CONF = 0.3
 
 # Pre-group POSE_SKELETON connections by BGR colour so the draw loop can issue
 # one cv2.polylines() call per colour instead of one cv2.line() per connection.
 # Built once at module import time; never mutated at runtime.
-from collections import defaultdict as _defaultdict
-_SKELETON_BY_COLOR: dict = _defaultdict(list)
+_SKELETON_BY_COLOR: dict = defaultdict(list)
 for _a, _b, _c in POSE_SKELETON:
     _SKELETON_BY_COLOR[_c].append((_a, _b))
 del _a, _b, _c  # clean up loop variables from module namespace
@@ -433,6 +433,11 @@ class RTSPStreamLoader:
                         self.cap = cap
                         self.backend_name = name
                         self.connected = True
+                        # Clear the zombie-thread slot so that _timed_read()'s
+                        # L3 guard does not block reads on the brand-new cap.
+                        # The old thread operates on cap_snapshot (already
+                        # released above) and will exit on its own.
+                        self._pending_read_thread = None
                         w   = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                         h   = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                         fps = cap.get(cv2.CAP_PROP_FPS)
@@ -684,7 +689,8 @@ class StreamingHandler(BaseHTTPRequestHandler):
                     self.end_headers()
                     self.wfile.write(jpeg)
                     self.wfile.write(b"\r\n")
-                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError,
+                        OSError):
                     break
         finally:
             self.server.tracker.monitor.remove_client()
@@ -703,7 +709,7 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 
 class YOLOTracker:
     """
-    YOLO HTTP-MJPEG Tracker  v1.1.0
+    YOLO HTTP-MJPEG Tracker
 
     Combines model-format detection, task detection, RTSP/webcam reading,
     YOLO inference, annotation, and HTTP serving into a single pipeline.
@@ -718,11 +724,7 @@ class YOLOTracker:
         1. Detect backend from model path (detect_model_format()).
         2. If --device provided → pass verbatim to every predict/track call.
            No validation; Ultralytics raises a clear error for invalid values.
-        3. If --device NOT provided (empty string):
-           • pytorch / unknown  → omit device kwarg (Ultralytics auto-select)
-           • tensorrt           → device="cuda"
-           • openvino           → device="intel:cpu"
-           • coreml / onnx      → omit device kwarg
+        3. If --device NOT provided (empty string): Ultralytics auto-select
     """
 
     def __init__(self, args):
@@ -740,6 +742,7 @@ class YOLOTracker:
         self.trajectory_length = args.trajectory_length
         self.filter_classes    = args.classes or []
         self.input_src         = args.input
+        self.pose_kp_conf      = args.pose_kp_conf
 
         # ── Detect model format ──────────────────────────────────────────────
         self.model_format    = detect_model_format(self.model_name)
@@ -1018,12 +1021,14 @@ class YOLOTracker:
         # Single overlay for all semi-transparent label backgrounds
         overlay = img.copy()
         for x1, y1, tw, th, _ in det_data:
-            cv2.rectangle(overlay, (x1, y1 - th - 12), (x1 + tw + 12, y1), (0, 255, 0), -1)
+            y_label = y1 if y1 - th - 12 > 0 else y1 + th + 12
+            cv2.rectangle(overlay, (x1, y_label - th - 12), (x1 + tw + 12, y_label), (0, 255, 0), -1)
         cv2.addWeighted(overlay, 0.6, img, 0.4, 0, img)
 
         # Draw text on top of the blended image
-        for x1, y1, _, _, label in det_data:
-            cv2.putText(img, label, (x1 + 6, y1 - 6), font, scale, (255, 255, 255), thick, cv2.LINE_AA)
+        for x1, y1, tw, th, label in det_data:
+            y_label = y1 if y1 - th - 12 > 0 else y1 + th + 12
+            cv2.putText(img, label, (x1 + 6, y_label - 6), font, scale, (255, 255, 255), thick, cv2.LINE_AA)
 
         return len(det_data)
 
@@ -1037,7 +1042,7 @@ class YOLOTracker:
           2. Draw a filled circle at each visible keypoint.
           3. Draw the bounding box and label (same style as detection).
 
-        Keypoints below POSE_KP_CONF confidence are skipped entirely so that
+        Keypoints below self.pose_kp_conf confidence are skipped entirely so that
         partially-visible people do not produce phantom limbs.
         """
         if not results or not results[0].keypoints:
@@ -1063,7 +1068,7 @@ class YOLOTracker:
             for color, connections in _SKELETON_BY_COLOR.items():
                 segs = []
                 for a, b in connections:
-                    if kp_data[a][2] < POSE_KP_CONF or kp_data[b][2] < POSE_KP_CONF:
+                    if kp_data[a][2] < self.pose_kp_conf or kp_data[b][2] < self.pose_kp_conf:
                         continue
                     segs.append(np.array([
                         [[int(kp_data[a][0]), int(kp_data[a][1])]],
@@ -1075,7 +1080,7 @@ class YOLOTracker:
             # ── Draw keypoint circles ───────────────────────────────────────
             # Use numpy masking to filter valid keypoints before entering the
             # Python loop, avoiding per-keypoint `if` evaluation overhead.
-            valid_mask = kp_data[:, 2] >= POSE_KP_CONF
+            valid_mask = kp_data[:, 2] >= self.pose_kp_conf
             for kp_idx in np.where(valid_mask)[0]:
                 x, y = int(kp_data[kp_idx, 0]), int(kp_data[kp_idx, 1])
                 radius = 3 if kp_idx < 5 else 5
@@ -1095,10 +1100,10 @@ class YOLOTracker:
                 if self.trajectory and bx.id is not None:
                     cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
                     self._draw_trajectory(img, int(bx.id[0]), (cx, cy),
-                                          color=(255, 220, 50))
+                                          color=(50, 220, 255))
 
                 self._draw_corner_box(img, x1, y1, x2, y2,
-                                      color=(255, 220, 50), thickness=2)
+                                      color=(50, 220, 255), thickness=2)
                 (tw, th), _ = cv2.getTextSize(label, font, scale, thick)
                 label_data.append((x1, y1, tw, th, label))
             num += 1
@@ -1107,11 +1112,13 @@ class YOLOTracker:
         if label_data:
             overlay = img.copy()
             for x1, y1, tw, th, _ in label_data:
-                cv2.rectangle(overlay, (x1, y1 - th - 10), (x1 + tw + 10, y1),
-                              (255, 220, 50), -1)
+                y_label = y1 if y1 - th - 10 > 0 else y1 + th + 10
+                cv2.rectangle(overlay, (x1, y_label - th - 10), (x1 + tw + 10, y_label),
+                              (50, 220, 255), -1)
             cv2.addWeighted(overlay, 0.6, img, 0.4, 0, img)
-            for x1, y1, _, _, label in label_data:
-                cv2.putText(img, label, (x1 + 5, y1 - 5),
+            for x1, y1, tw, th, label in label_data:
+                y_label = y1 if y1 - th - 10 > 0 else y1 + th + 10
+                cv2.putText(img, label, (x1 + 5, y_label - 5),
                             font, scale, (0, 0, 0), thick, cv2.LINE_AA)
 
         return num
@@ -1174,13 +1181,19 @@ class YOLOTracker:
         for contours, color in contour_list:
             cv2.drawContours(img, contours, -1, color, 2)
 
-        # Draw boxes and labels on top of the blended masks
+        # Draw boxes and labels on top of the blended masks.
+        # Guard: only draw a box/label when the same index has a rendered mask.
+        # This prevents visual inconsistency when len(boxes) != len(masks), e.g.
+        # when TensorRT precision loss yields extra boxes without masks or vice versa.
         if boxes is not None:
             font = cv2.FONT_HERSHEY_SIMPLEX
             scale, thick = 0.75, 2
             label_data = []
 
-            for b in boxes:
+            for i, b in enumerate(boxes):
+                if i >= len(masks):
+                    # No rendered mask for this box index — skip to stay consistent.
+                    continue
                 cls_id  = int(b.cls[0])
                 conf    = float(b.conf[0])
                 x1, y1, x2, y2 = map(int, b.xyxy[0].cpu().numpy())
@@ -1204,14 +1217,18 @@ class YOLOTracker:
             if label_data:
                 lbl_overlay = img.copy()
                 for x1, y1, tw, th, _, color in label_data:
-                    cv2.rectangle(lbl_overlay, (x1, y1 - th - 10),
-                                  (x1 + tw + 10, y1), color, -1)
+                    y_label = y1 if y1 - th - 10 > 0 else y1 + th + 10
+                    cv2.rectangle(lbl_overlay, (x1, y_label - th - 10),
+                                  (x1 + tw + 10, y_label), color, -1)
                 cv2.addWeighted(lbl_overlay, 0.65, img, 0.35, 0, img)
-                for x1, y1, _, _, label, _ in label_data:
-                    cv2.putText(img, label, (x1 + 5, y1 - 5),
+                for x1, y1, tw, th, label, _ in label_data:
+                    y_label = y1 if y1 - th - 10 > 0 else y1 + th + 10
+                    cv2.putText(img, label, (x1 + 5, y_label - 5),
                                 font, scale, (255, 255, 255), thick, cv2.LINE_AA)
 
-            num = len(label_data)
+            num = len(masks)  # count all drawn masks, not just labelled boxes
+        else:
+            num = len(masks)  # masks were drawn even without boxes
         return num
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -1360,9 +1377,6 @@ class YOLOTracker:
         def _sigint(signum, frame):
             print("\n🛑 Stopping …")
             self.running = False
-            if server:
-                server.shutdown()
-            sys.exit(0)
 
         signal.signal(signal.SIGINT, _sigint)
 
@@ -1406,9 +1420,9 @@ def parse_args():
             "YOLO HTTP-MJPEG Tracker v1.1.0 (Model-Driven Backend + Full-Task)\n\n"
             "Backend is selected automatically from the model file:\n"
             "  *.pt                → PyTorch  (Ultralytics auto-device)\n"
-            "  *.engine            → TensorRT (needs --device cuda or leave blank)\n"
-            "  *_openvino_model/   → OpenVINO (default device: intel:cpu)\n"
-            "  *.mlpackage         → CoreML   (macOS only)\n"
+            "  *.engine            → TensorRT \n"
+            "  *_openvino_model/   → OpenVINO \n"
+            "  *.mlpackage         → CoreML   \n"
             "  *.onnx              → ONNX Runtime\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1446,6 +1460,9 @@ def parse_args():
                         help="JPEG encoding quality (0–100)")
     parser.add_argument("--classes",           nargs="+", type=str,
                         help="Filter detections to these class names, e.g. --classes person car")
+    parser.add_argument("--pose-kp-conf",      type=float, default=0.3,
+                        help="Keypoint confidence threshold for pose estimation (0.0–1.0); "
+                             "keypoints below this value are not drawn (default: 0.3)")
     return parser.parse_args()
 
 
@@ -1460,7 +1477,12 @@ def main():
     if isinstance(args.input, str) and args.input.isdigit():
         args.input = int(args.input)
 
-    tracker = YOLOTracker(args)
+    try:
+        tracker = YOLOTracker(args)
+    except Exception as e:
+        print(f"[Fatal] Failed to initialise tracker: {e}", file=sys.stderr)
+        sys.exit(1)
+
     tracker.run()
 
 

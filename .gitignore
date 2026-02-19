@@ -1,2 +1,33 @@
 __pycache__/
 *.pyc
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# YOLO model files (exported or downloaded)
+*.pt
+*.pth
+*.engine
+*.onnx
+*.mlpackage
+*.mlmodel
+*_openvino_model/
+
+# Calibration / dataset cache
+*.cache
+
+# OS
+.DS_Store
+Thumbs.db

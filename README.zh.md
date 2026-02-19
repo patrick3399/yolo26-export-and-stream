@@ -1,6 +1,6 @@
-# YOLO 環境檢測工具 & HTTP 串流追蹤器  v1.1.0
+# YOLO 環境檢測工具 & HTTP 串流追蹤器
 
-一套兩件式流水線，可在任何硬體上部署 YOLO 物件偵測、姿勢估計與語義分割：
+一套兩件式流水線，可在任何硬體上部署 YOLO 物件偵測、姿勢估計與實例分割：
 
 1. **`yolo_env_checker.py`** — 掃描硬體環境、選擇最佳匯出格式並匯出模型。
 2. **`yolo_http_tracker.py`** — 載入匯出的模型，透過 HTTP（MJPEG）即時串流標註影像。
@@ -29,7 +29,9 @@
 - [精度對照表](#精度對照表)
 - [優點與限制](#優點與限制)
 - [疑難排解](#疑難排解)
+- [專案結構](#專案結構)
 - [授權](#授權)
+- [第三方聲明](#第三方聲明)
 
 ---
 
@@ -83,7 +85,7 @@ python yolo_http_tracker.py \
 | 精度支援矩陣 | FP32/FP16/BF16/INT8/INT4/FP8，以實際 tensor 分配驗證 |
 | 推理框架偵測 | TensorRT、CoreML、OpenVINO |
 | 智慧診斷 | AMD / Intel GPU 建議、版本衝突修復方案 |
-| 互動式選單 | 任務 → 模型大小 → 格式 → 精度，附推薦預設值 |
+| 互動式選單 | 格式 → 任務 → 模型大小 → 精度，附推薦預設值 |
 
 ### HTTP 串流追蹤器（`yolo_http_tracker.py`）
 
@@ -92,7 +94,7 @@ python yolo_http_tracker.py \
 | 模型驅動後端 | 從副檔名自動推斷後端，無需手動指定 |
 | 模型驅動任務 | 從檔名後綴（`-pose`、`-seg`）推斷任務，並於載入後以 `model.task` 確認 |
 | 物件偵測 / 追蹤 | 角框覆蓋、標籤、信心值、可選軌跡線 |
-| 姿勢估計 | COCO 17 關節點骨架，按肢體區域分色，低信心點自動跳過 |
+| 姿勢估計 | COCO 17 關節點骨架，按肢體區域分色，低於 `--pose-kp-conf` 門檻的關節點自動跳過 |
 | 實例分割 | 半透明逐實例彩色遮罩（20 色調色盤依類別循環），輪廓描邊，角框 + 標籤疊加 |
 | 多客戶端 MJPEG | 支援不限數量的瀏覽器 / VLC 同時觀看 |
 | HTML 檢視頁面 | 自動更新統計面板（任務、FPS、推理時間、丟幀率、連線數） |
@@ -386,6 +388,7 @@ python yolo_http_tracker.py --input <來源> --model <模型路徑> [選項]
 | `--trajectory-length` | `30` | 每個物件的最大軌跡歷史點數 |
 | `--quality` | `60` | JPEG 編碼品質（0–100） |
 | `--classes` | *（全部）* | 過濾類別名稱，如 `--classes person car` |
+| `--pose-kp-conf` | `0.3` | 姿勢估計的關節點信心值門檻；低於此值的關節點不予繪製 |
 
 ### HTTP 端點
 
@@ -427,7 +430,7 @@ python yolo_http_tracker.py --input <來源> --model <模型路徑> [選項]
   - **灰色** — 軀幹（肩髖連線、髖部橫桿）
   - **綠色** — 左腿
   - **藍色** — 右腿
-- 信心值低於 0.3 的關節點自動跳過（不會出現幽靈肢體）
+- 信心值低於 `--pose-kp-conf` 門檻（預設 `0.3`）的關節點自動跳過（不會出現幽靈肢體）
 - 邊界框與標籤疊加在骨架上方
 - 透過追蹤 ID 支援軌跡線（`--trajectory`）
 
@@ -556,11 +559,12 @@ python yolo_http_tracker.py --model yolo26s_fp16_openvino_model --device intel:g
 ## 專案結構
 
 ```
-yolo-export-and-stream/
+yolo26-export-and-stream/
 ├── yolo_env_checker.py     # 第一步：環境檢測 + 模型匯出（v1.1.0）
 ├── yolo_http_tracker.py    # 第二步：即時 HTTP 串流追蹤器（v1.1.0）
-├── README.md  
-└── README.zh.md  
+├── LICENSE
+├── README.md
+└── README.zh.md
 ```
 
 ---
