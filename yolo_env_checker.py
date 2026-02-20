@@ -18,7 +18,7 @@ What it does:
     - Provides an interactive menu to select task, model size, format, and precision
     - Exports the chosen model with the recommended parameters
 
-Supported tasks (v1.1.0):
+Supported tasks:
     Detection / Tracking  — yolo26n/s/m/l/x.pt
     Pose Estimation       — yolo26n/s/m/l/x-pose.pt
     Segmentation          — yolo26n/s/m/l/x-seg.pt
@@ -46,6 +46,7 @@ warnings.filterwarnings("ignore", message=".*scikit-learn.*")
 warnings.filterwarnings("ignore", message=".*openvino.runtime.*")
 os.environ['PYTHONWARNINGS'] = 'ignore'
 
+__version__ = '1.2.0'
 
 # ============================================================================
 # Export parameter defaults  (edit these to customise export behaviour)
@@ -94,7 +95,7 @@ VIRTUAL_GPU_KEYWORDS = [
 
 
 class YOLOEnvChecker:
-    """YOLO Environment Checker & Model Export Tool  v1.1.0"""
+    """YOLO Environment Checker & Model Export Tool"""
 
     def __init__(self):
         self.env_info = {
@@ -166,7 +167,7 @@ class YOLOEnvChecker:
                 cmd, shell=shell, stderr=subprocess.DEVNULL,
                 timeout=timeout, env=env
             )
-            return out.decode(errors='ignore').strip()
+            return out.decode(errors='replace').strip()
         except Exception:
             return ''
 
@@ -554,7 +555,7 @@ class YOLOEnvChecker:
                         ['powershell', '-NoProfile', '-Command',
                          'Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name'],
                         stderr=subprocess.STDOUT, creationflags=flags, timeout=10
-                    ).decode(errors='ignore')
+                    ).decode(errors='replace')
                     gpus = [ln.strip() for ln in raw.replace('\r\n', '\n').split('\n') if ln.strip()]
                     result['method'] = 'PowerShell Win32_VideoController'
                 except Exception:
@@ -565,7 +566,7 @@ class YOLOEnvChecker:
                         raw = subprocess.check_output(
                             ['wmic', 'path', 'Win32_VideoController', 'get', 'Name', '/value'],
                             stderr=subprocess.DEVNULL, creationflags=flags, timeout=10
-                        ).decode(errors='ignore')
+                        ).decode(errors='replace')
                         gpus = [ln.split('=', 1)[1].strip()
                                 for ln in raw.replace('\r\n', '\n').split('\n')
                                 if ln.startswith('Name=')]
@@ -586,7 +587,7 @@ class YOLOEnvChecker:
                 try:
                     raw = subprocess.check_output(
                         ['lspci'], stderr=subprocess.DEVNULL, timeout=5
-                    ).decode(errors='ignore')
+                    ).decode(errors='replace')
                     gpus = []
                     for line in raw.split('\n'):
                         if any(k in line.upper() for k in ('VGA', '3D CONTROLLER', 'DISPLAY CONTROLLER')):
@@ -1572,10 +1573,10 @@ class YOLOEnvChecker:
                 import shutil
                 if os.path.isdir(out_str):
                     if os.path.exists(expected): shutil.rmtree(expected)
-                    os.rename(out_str, expected)
+                    shutil.move(out_str, expected)
                 else:
                     if os.path.exists(expected): os.remove(expected)
-                    os.rename(out_str, expected)
+                    shutil.move(out_str, expected)
                 out = expected
             print(f"\n{'='*70}")
             print(f'✅ Export successful! (elapsed {elapsed:.1f}s)')
@@ -1611,7 +1612,7 @@ class YOLOEnvChecker:
         on the command line.  Pass ``--auto`` to skip every prompt silently.
         """
         print('\n' + '='*70)
-        print('  🔥 YOLO Environment Checker & Model Export Tool  v1.1.0')
+        print(f'  🔥 YOLO Environment Checker & Model Export Tool  v{__version__}')
         print('='*70)
         self.detect_all()
         self.show_environment()
@@ -1692,7 +1693,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog='yolo_env_checker',
         description=(
-            'YOLO Environment Checker & Model Export Tool  v1.1.0\n\n'
+            f'YOLO Environment Checker & Model Export Tool  v{__version__}\n\n'
             'Without arguments the tool runs interactively.\n'
             'Supply --auto (or individual flags) for non-interactive / CI use.\n\n'
             'Examples:\n'

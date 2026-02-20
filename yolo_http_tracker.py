@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-YOLO HTTP-MJPEG Tracker  v1.1.0  (Model-Driven Backend + Full-Task Edition)
+YOLO HTTP-MJPEG Tracker  (Model-Driven Backend + Full-Task Edition)
 
 Overview:
     Step 2 in the two-tool pipeline.
@@ -11,7 +11,7 @@ Overview:
         Pose Estimation       — 17-keypoint skeleton with colour-coded limbs
         Segmentation          — per-instance colour masks + corner-box overlay
 
-Backend selection (unchanged from v1.0.0):
+Backend selection:
     The inference backend is determined automatically from the model path:
         *.pt / *.pth / *.yaml   → PyTorch  (Ultralytics auto-device)
         *.engine                → TensorRT (CUDA required)
@@ -19,7 +19,7 @@ Backend selection (unchanged from v1.0.0):
         *.mlpackage / *.mlmodel → CoreML   (macOS only)
         *.onnx                  → ONNX Runtime
 
-Task detection (v1.1.0):
+Task detection:
     Task is inferred from the model filename suffix, then confirmed from
     the loaded model's own .task attribute:
         filename contains '-pose'   → pose
@@ -72,6 +72,8 @@ import cv2
 import numpy as np
 import torch
 from ultralytics import YOLO
+
+__version__ = '1.2.0'
 
 # ────────────────────────────────────────────────────────────────────────────
 # Model-format detection
@@ -215,6 +217,12 @@ del _a, _b, _c  # clean up loop variables from module namespace
 # the reconnect logic instead of blocking the thread indefinitely.
 _CAP_READ_TIMEOUT = 5.0
 
+# Maximum number of zombie OpenCV threads (stuck cap.read / cap.release)
+# allowed before forcing a process exit.  When this threshold is crossed
+# the process calls os._exit(1) so that an external supervisor (systemd,
+# Docker, etc.) can restart it in a clean state.
+_MAX_ZOMBIE_THREADS = 20
+
 # ── Segmentation mask colour palette (BGR, 20 distinct colours cycling by class)
 SEG_PALETTE = [
     (  0, 200, 255), (  0, 255, 100), (255, 100,  50), (200,   0, 255),
@@ -223,6 +231,19 @@ SEG_PALETTE = [
     (255,   0, 100), ( 50, 200, 100), (200, 255,   0), (  0, 100, 200),
     (255, 200, 100), (100,   0, 255), (  0, 255,  50), (200, 100, 255),
 ]
+
+
+def _class_color(cls_id: int) -> tuple:
+    """Return a distinct BGR colour for a given class ID (YOLO-style HSV palette).
+
+    Uses the golden-ratio hue method so colours are maximally spread across
+    the hue wheel regardless of how many classes the model has.
+    """
+    golden = 0.618033988749895
+    hue = int((cls_id * golden % 1.0) * 180)
+    hsv = np.array([[[hue, 210, 255]]], dtype=np.uint8)
+    bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0][0]
+    return (int(bgr[0]), int(bgr[1]), int(bgr[2]))
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -239,6 +260,7 @@ class PerformanceMonitor:
             for k in ("read_frame", "inference", "draw", "encode", "total")
         }
         self.lock = threading.Lock()
+        self.received_frames = 0
         self.frame_count = 0
         self.dropped_frames = 0
         self.current_fps = 0.0
@@ -250,7 +272,13 @@ class PerformanceMonitor:
         with self.lock:
             self.times[category].append(duration_ms)
 
+    def record_received(self):
+        """A frame was dequeued by the consumer (may still be skipped)."""
+        with self.lock:
+            self.received_frames += 1
+
     def record_frame(self):
+        """A frame went through full inference + draw pipeline."""
         with self.lock:
             self.frame_count += 1
 
@@ -279,6 +307,11 @@ class PerformanceMonitor:
             return self.client_count
 
     def get_stats(self) -> dict:
+        # Snapshot values guarded by other locks BEFORE acquiring self.lock
+        # to avoid nested lock acquisition (self.lock → fps_lock/client_lock).
+        fps          = self.get_fps()
+        client_count = self.get_client_count()
+
         with self.lock:
             stats = {}
             for cat, series in self.times.items():
@@ -296,18 +329,20 @@ class PerformanceMonitor:
 
             stats["frame_count"]    = self.frame_count
             stats["dropped_frames"] = self.dropped_frames
+            total_received = self.received_frames + self.dropped_frames
             stats["drop_rate"]      = (
-                self.dropped_frames / self.frame_count * 100.0
-                if self.frame_count > 0 else 0.0
+                self.dropped_frames / total_received * 100.0
+                if total_received > 0 else 0.0
             )
-            stats["client_count"] = self.get_client_count()
-            stats["fps"]          = self.get_fps()
+
+        stats["client_count"] = client_count
+        stats["fps"]          = fps
         return stats
 
     def print_report(self):
         s = self.get_stats()
         print("\n" + "=" * 70)
-        print("📊 PERFORMANCE REPORT (v1.1.0 Full-Task Edition)")
+        print(f"📊 PERFORMANCE REPORT (v{__version__})")
         print("=" * 70)
         print(f"Current FPS : {s['fps']:.1f}")
         print(f"Clients     : {s['client_count']}")
@@ -382,8 +417,8 @@ class RTSPStreamLoader:
     def _open_capture(self):
         """Try each backend in order; raise RuntimeError if all fail.
 
-        L2 fix: release the old cap *before* opening a new one.
-        --------------------------------------------------------
+        The previous cap is released asynchronously before the new one opens.
+        ----------------------------------------------------------------------
         Any daemon thread currently blocked inside C++ ``cap.read()`` holds a
         reference to the previous VideoCapture object.  Calling
         ``cap.release()`` on the old object closes the underlying socket /
@@ -463,10 +498,11 @@ class RTSPStreamLoader:
             entirely, making this thread-based fallback unnecessary.
 
         L2 (cap.release in _open_capture):
-            Before creating a replacement VideoCapture, _open_capture() calls
-            ``self.cap.release()`` on the old object.  That closes the
-            underlying socket, which causes a hung C++ ``cap.read()`` to
-            return an error, letting the zombie thread exit naturally.
+            Before creating a replacement VideoCapture, _open_capture()
+            asynchronously releases the old object via a daemon thread.
+            That closes the underlying socket, which causes a hung C++
+            ``cap.read()`` to return an error, letting the zombie thread
+            exit naturally.
 
         L3 (one-thread-per-cap, implemented here):
             ``self._pending_read_thread`` records the current daemon thread.
@@ -514,6 +550,23 @@ class RTSPStreamLoader:
         """Background thread: continuously read frames and keep queue fresh."""
         while not self.stop_event.is_set():
             if not self.connected:
+                # Guard against unbounded zombie thread accumulation.
+                # Each failed reconnect can leave behind a stuck cap.read()
+                # or cap.release() daemon thread.  If enough pile up, force
+                # a process exit so an external supervisor can restart clean.
+                _zombie_names = {"cap-release", "rtsp-read", "cap-release-stop"}
+                _zombie_count = sum(
+                    1 for t in threading.enumerate()
+                    if t.name in _zombie_names and t.is_alive()
+                )
+                if _zombie_count >= _MAX_ZOMBIE_THREADS:
+                    print(
+                        f"\n❌ FATAL: {_zombie_count} zombie OpenCV threads "
+                        f"detected (limit: {_MAX_ZOMBIE_THREADS}).\n"
+                        f"   Forcing process exit to prevent resource exhaustion.\n"
+                        f"   Use a process supervisor (systemd/Docker) to restart."
+                    )
+                    os._exit(1)
                 time.sleep(self.reconnect_delay)
                 try:
                     self._open_capture()
@@ -544,6 +597,7 @@ class RTSPStreamLoader:
             except queue.Full:
                 try:
                     self.q.get_nowait()
+                    self.monitor.record_drop()
                     self.q.put(frame, block=False)
                 except Exception:
                     self.monitor.record_drop()
@@ -584,6 +638,13 @@ class RTSPStreamLoader:
 class StreamingHandler(BaseHTTPRequestHandler):
     """Serves the MJPEG stream, the HTML viewer page, and JSON stats."""
 
+    def setup(self):
+        super().setup()
+        # Prevent wfile.write() from blocking indefinitely when a client
+        # disconnects without sending TCP RST/FIN.  Without this timeout
+        # the handler thread would hang forever once the send buffer fills.
+        self.request.settimeout(10)
+
     def do_GET(self):
         if self.path == "/":
             self._serve_html()
@@ -608,7 +669,7 @@ class StreamingHandler(BaseHTTPRequestHandler):
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>YOLO Tracker v1.1.0</title>
+  <title>YOLO Tracker v{__version__}</title>
   <style>
     body {{ margin:0; background:#000; color:#fff; font-family:Arial,sans-serif; }}
     .info {{
@@ -669,19 +730,29 @@ class StreamingHandler(BaseHTTPRequestHandler):
 
     # ------------------------------------------------------------------
     def _serve_stream(self):
-        """Serve the MJPEG stream (multipart/x-mixed-replace boundary)."""
+        """Serve the MJPEG stream (multipart/x-mixed-replace boundary).
+
+        Fix: track last_sent_version so each JPEG is transmitted to the client
+        exactly once.  Without this guard the loop would re-send the same JPEG
+        at socket speed (thousands of times per second) while the inference
+        thread produces new frames at a much lower rate (e.g. 15 FPS), causing
+        CPU and bandwidth exhaustion and browser-side stuttering/crashes.
+        """
         self.send_response(200)
         self.send_header("Content-type", "multipart/x-mixed-replace; boundary=frame")
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.end_headers()
 
         self.server.tracker.monitor.add_client()
+        last_sent_version = -1
         try:
             while self.server.tracker.running:
-                jpeg = self.server.tracker.get_jpeg()
-                if jpeg is None:
-                    time.sleep(0.01)
+                jpeg, version = self.server.tracker.get_jpeg()
+                if jpeg is None or version == last_sent_version:
+                    with self.server.tracker._jpeg_condition:
+                        self.server.tracker._jpeg_condition.wait(timeout=0.5)
                     continue
+                last_sent_version = version
                 try:
                     self.wfile.write(b"--frame\r\n")
                     self.send_header("Content-type", "image/jpeg")
@@ -729,7 +800,7 @@ class YOLOTracker:
 
     def __init__(self, args):
         self.args = args
-        self.running = False
+        self._stop_event = threading.Event()  # thread-safe running flag
         self.model_name  = args.model
         self.tracker_cfg = args.tracker
         self.port        = args.port
@@ -793,12 +864,45 @@ class YOLOTracker:
         # same frame multiple times.
         self._frame_version: int = 0
 
+        # JPEG version counter: incremented each time latest_jpeg is updated
+        # by the encoding thread.  _serve_stream compares against this to
+        # avoid re-sending the same JPEG to HTTP clients (which would flood
+        # the network at socket speed rather than at inference speed).
+        self._jpeg_version: int = 0
+
+        # Notification primitives (replace busy-wait polling).
+        # _frame_event:    signalled by process_loop when a new frame is ready
+        #                  for the encoding thread.
+        # _jpeg_condition: signalled by the encoding thread when a new JPEG
+        #                  is ready for HTTP streaming clients.
+        self._frame_event = threading.Event()
+        self._jpeg_condition = threading.Condition()
+
         self._start_encoding_thread()
+
+    # ── Thread-safe running property backed by threading.Event ────────────
+    @property
+    def running(self) -> bool:
+        return not self._stop_event.is_set()
+
+    @running.setter
+    def running(self, value: bool):
+        if value:
+            self._stop_event.clear()
+        else:
+            self._stop_event.set()
+            # Wake up threads waiting on frame/jpeg notifications so they
+            # can observe the stop flag and exit promptly.
+            if hasattr(self, '_frame_event'):
+                self._frame_event.set()
+            if hasattr(self, '_jpeg_condition'):
+                with self._jpeg_condition:
+                    self._jpeg_condition.notify_all()
 
     # ──────────────────────────────────────────────────────────────────────────
     def _print_diagnostic(self):
         print("\n" + "=" * 70)
-        print("🔍 SYSTEM DIAGNOSTIC (v1.1.0 Model-Driven Backend + Full-Task)")
+        print(f"🔍 SYSTEM DIAGNOSTIC (v{__version__})")
         print("=" * 70)
         print(f"Python     : {sys.version.split()[0]}")
         print(f"PyTorch    : {torch.__version__}")
@@ -912,7 +1016,8 @@ class YOLOTracker:
                         frame = self.latest_frame.copy()
                         last_encoded_version = current_version
                 if frame is None:
-                    time.sleep(0.01)
+                    self._frame_event.wait(timeout=1.0)
+                    self._frame_event.clear()
                     continue
                 t0 = time.time()
                 ok, buf = cv2.imencode(
@@ -923,6 +1028,9 @@ class YOLOTracker:
                 if ok:
                     with self.frame_lock:
                         self.latest_jpeg = buf.tobytes()
+                        self._jpeg_version += 1
+                    with self._jpeg_condition:
+                        self._jpeg_condition.notify_all()
 
         self.encode_thread = threading.Thread(target=_loop, daemon=True)
         self.encode_thread.start()
@@ -930,9 +1038,15 @@ class YOLOTracker:
 
     # ──────────────────────────────────────────────────────────────────────────
     def get_jpeg(self):
-        """Return the latest encoded JPEG bytes (thread-safe)."""
+        """Return (jpeg_bytes, version) for the latest encoded frame (thread-safe).
+
+        version is an integer that increments each time a new JPEG is stored
+        by the encoding thread.  Callers can compare against a saved version
+        to detect whether a genuinely new frame is available without needing
+        to compare raw byte buffers.
+        """
         with self.frame_lock:
-            return self.latest_jpeg
+            return self.latest_jpeg, self._jpeg_version
 
     # ──────────────────────────────────────────────────────────────────────────
     def _draw_corner_box(self, img, x1, y1, x2, y2,
@@ -993,7 +1107,7 @@ class YOLOTracker:
         2 × trajectory_length frames is considered gone and is removed from
         both self.trajectories and self._trajectory_last_seen.
         """
-        stale_threshold = self._traj_frame_cnt - self.trajectory_length * 2
+        stale_threshold = max(0, self._traj_frame_cnt - self.trajectory_length * 2)
         stale_ids = [
             tid for tid, last_frame in self._trajectory_last_seen.items()
             if last_frame < stale_threshold
@@ -1023,24 +1137,26 @@ class YOLOTracker:
                 else f"{self.class_names[cls_id]} {int(conf*100)}%"
             )
 
+            color = _class_color(cls_id)
+
             if self.trajectory and b.id is not None:
                 cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-                self._draw_trajectory(img, int(b.id[0]), (cx, cy))
+                self._draw_trajectory(img, int(b.id[0]), (cx, cy), color=color)
 
-            self._draw_corner_box(img, x1, y1, x2, y2)
+            self._draw_corner_box(img, x1, y1, x2, y2, color=color)
 
             (tw, th), _ = cv2.getTextSize(label, font, scale, thick)
-            det_data.append((x1, y1, tw, th, label))
+            det_data.append((x1, y1, tw, th, label, color))
 
         # Single overlay for all semi-transparent label backgrounds
         overlay = img.copy()
-        for x1, y1, tw, th, _ in det_data:
+        for x1, y1, tw, th, _, color in det_data:
             y_label = y1 if y1 - th - 12 > 0 else y1 + th + 12
-            cv2.rectangle(overlay, (x1, y_label - th - 12), (x1 + tw + 12, y_label), (0, 255, 0), -1)
+            cv2.rectangle(overlay, (x1, y_label - th - 12), (x1 + tw + 12, y_label), color, -1)
         cv2.addWeighted(overlay, 0.6, img, 0.4, 0, img)
 
         # Draw text on top of the blended image
-        for x1, y1, tw, th, label in det_data:
+        for x1, y1, tw, th, label, _ in det_data:
             y_label = y1 if y1 - th - 12 > 0 else y1 + th + 12
             cv2.putText(img, label, (x1 + 6, y_label - 6), font, scale, (255, 255, 255), thick, cv2.LINE_AA)
 
@@ -1264,7 +1380,7 @@ class YOLOTracker:
         and the process to terminate cleanly.
         """
         print("\n" + "=" * 70)
-        print(f"✔ YOLO processing started  [{self.task_label}]  (v1.1.0)")
+        print(f"✔ YOLO processing started  [{self.task_label}]  (v{__version__})")
         print("=" * 70)
         print("Press Ctrl+C to stop and view performance report\n")
 
@@ -1292,12 +1408,14 @@ class YOLOTracker:
                 if frame is None:
                     continue
 
-                self.monitor.record_frame()
+                self.monitor.record_received()
                 frame_cnt += 1
 
                 # Skip frames if frame_skip > 1
                 if self.frame_skip > 1 and (frame_cnt % self.frame_skip) != 0:
                     continue
+
+                self.monitor.record_frame()
 
                 # ── Inference ──────────────────────────────────────────────────
                 inf_t0 = time.time()
@@ -1345,6 +1463,7 @@ class YOLOTracker:
                 with self.frame_lock:
                     self.latest_frame = annotated
                     self._frame_version += 1
+                self._frame_event.set()
 
                 self.monitor.record("total", (time.time() - loop_t0) * 1000.0)
 
@@ -1379,6 +1498,7 @@ class YOLOTracker:
                 except Exception:
                     pass
             self.stop_encode_event.set()
+            self._frame_event.set()   # wake encoding thread to see stop flag
             if self.encode_thread and self.encode_thread.is_alive():
                 self.encode_thread.join(timeout=2.0)
             self.monitor.print_report()
@@ -1431,7 +1551,7 @@ class YOLOTracker:
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "YOLO HTTP-MJPEG Tracker v1.1.0 (Model-Driven Backend + Full-Task)\n\n"
+            f"YOLO HTTP-MJPEG Tracker v{__version__}\n\n"
             "Backend is selected automatically from the model file:\n"
             "  *.pt                → PyTorch  (Ultralytics auto-device)\n"
             "  *.engine            → TensorRT \n"

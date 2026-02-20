@@ -6,7 +6,7 @@ segmentation on any hardware:
 1. **`yolo_env_checker.py`** — Scan your environment, pick the optimal export format, and export the model.
 2. **`yolo_http_tracker.py`** — Load the exported model and stream live annotated video over HTTP (MJPEG).
 
-Supported tasks (v1.1.0):
+Supported tasks :
 
 | Task | Model suffix | What you see |
 |---|---|---|
@@ -184,14 +184,14 @@ pip install ultralytics opencv-python-headless
 #### Linux — NVIDIA GPU (CUDA)
 
 ```bash
-pip install torch torchvision torchaudio
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
 pip install ultralytics
 ```
 
 #### Linux — NVIDIA GPU + TensorRT
 
 ```bash
-pip install torch torchvision torchaudio
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
 pip install ultralytics tensorrt
 ```
 
@@ -306,7 +306,7 @@ python yolo_env_checker.py
 ### Output sections
 
 ```
-🔥 YOLO Environment Checker & Model Export Tool  v1.1.0
+🔥 YOLO Environment Checker & Model Export Tool
   📦 Ultralytics
   📋 System Information
   🧮 CPU Information
@@ -319,7 +319,7 @@ python yolo_env_checker.py
   🩺 Smart Diagnostics & Recommendations
 ```
 
-### Interactive menu flow (v1.1.0)
+### Interactive menu flow
 
 ```
 Step 1 — Select export format
@@ -572,8 +572,8 @@ python yolo_http_tracker.py --model yolo26s_fp16_openvino_model --device intel:g
 
 ```
 yolo26-export-and-stream/
-├── yolo_env_checker.py     # Step 1: environment check + model export (v1.1.0)
-├── yolo_http_tracker.py    # Step 2: live HTTP streaming tracker  (v1.1.0)
+├── yolo_env_checker.py     # Step 1: environment check + model export
+├── yolo_http_tracker.py    # Step 2: live HTTP streaming tracker
 ├── LICENSE
 ├── README.md
 └── README.zh.md

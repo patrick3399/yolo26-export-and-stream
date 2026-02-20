@@ -5,7 +5,7 @@
 1. **`yolo_env_checker.py`** — 掃描硬體環境、選擇最佳匯出格式並匯出模型。
 2. **`yolo_http_tracker.py`** — 載入匯出的模型，透過 HTTP（MJPEG）即時串流標註影像。
 
-支援任務一覽（v1.1.0）：
+支援任務一覽 ：
 
 | 任務 | 模型後綴 | 畫面呈現 |
 |---|---|---|
@@ -183,14 +183,14 @@ pip install ultralytics opencv-python-headless
 #### Linux — NVIDIA GPU（CUDA）
 
 ```bash
-pip install torch torchvision torchaudio
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
 pip install ultralytics
 ```
 
 #### Linux — NVIDIA GPU + TensorRT
 
 ```bash
-pip install torch torchvision torchaudio
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
 pip install ultralytics tensorrt
 ```
 
@@ -302,7 +302,7 @@ python yolo_env_checker.py
 ### 報告各節說明
 
 ```
-🔥 YOLO Environment Checker & Model Export Tool  v1.1.0
+🔥 YOLO Environment Checker & Model Export Tool
   📦 Ultralytics
   📋 系統資訊
   🧮 CPU 資訊
@@ -315,7 +315,7 @@ python yolo_env_checker.py
   🩺 智慧診斷與建議
 ```
 
-### 互動選單流程（v1.1.0）
+### 互動選單流程
 
 ```
 第一層：選擇匯出格式
@@ -560,8 +560,8 @@ python yolo_http_tracker.py --model yolo26s_fp16_openvino_model --device intel:g
 
 ```
 yolo26-export-and-stream/
-├── yolo_env_checker.py     # 第一步：環境檢測 + 模型匯出（v1.1.0）
-├── yolo_http_tracker.py    # 第二步：即時 HTTP 串流追蹤器（v1.1.0）
+├── yolo_env_checker.py     # 第一步：環境檢測 + 模型匯出
+├── yolo_http_tracker.py    # 第二步：即時 HTTP 串流追蹤器
 ├── LICENSE
 ├── README.md
 └── README.zh.md
