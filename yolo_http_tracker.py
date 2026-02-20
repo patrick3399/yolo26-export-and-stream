@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-YOLO HTTP-MJPEG Tracker  v1.1.0  (Model-Driven Backend + Full-Task Edition)
+YOLO HTTP-MJPEG Tracker  (Model-Driven Backend + Full-Task Edition)
 
 Overview:
     Step 2 in the two-tool pipeline.
@@ -72,6 +72,8 @@ import cv2
 import numpy as np
 import torch
 from ultralytics import YOLO
+
+__version__ = '1.1.0'
 
 # ────────────────────────────────────────────────────────────────────────────
 # Model-format detection
@@ -340,7 +342,7 @@ class PerformanceMonitor:
     def print_report(self):
         s = self.get_stats()
         print("\n" + "=" * 70)
-        print("📊 PERFORMANCE REPORT (v1.1.0 Full-Task Edition)")
+        print(f"📊 PERFORMANCE REPORT (v{__version__})")
         print("=" * 70)
         print(f"Current FPS : {s['fps']:.1f}")
         print(f"Clients     : {s['client_count']}")
@@ -667,7 +669,7 @@ class StreamingHandler(BaseHTTPRequestHandler):
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>YOLO Tracker v1.1.0</title>
+  <title>YOLO Tracker v{__version__}</title>
   <style>
     body {{ margin:0; background:#000; color:#fff; font-family:Arial,sans-serif; }}
     .info {{
@@ -900,7 +902,7 @@ class YOLOTracker:
     # ──────────────────────────────────────────────────────────────────────────
     def _print_diagnostic(self):
         print("\n" + "=" * 70)
-        print("🔍 SYSTEM DIAGNOSTIC (v1.1.0 Model-Driven Backend + Full-Task)")
+        print(f"🔍 SYSTEM DIAGNOSTIC (v{__version__})")
         print("=" * 70)
         print(f"Python     : {sys.version.split()[0]}")
         print(f"PyTorch    : {torch.__version__}")
@@ -1378,7 +1380,7 @@ class YOLOTracker:
         and the process to terminate cleanly.
         """
         print("\n" + "=" * 70)
-        print(f"✔ YOLO processing started  [{self.task_label}]  (v1.1.0)")
+        print(f"✔ YOLO processing started  [{self.task_label}]  (v{__version__})")
         print("=" * 70)
         print("Press Ctrl+C to stop and view performance report\n")
 
@@ -1549,7 +1551,7 @@ class YOLOTracker:
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "YOLO HTTP-MJPEG Tracker v1.1.0 (Model-Driven Backend + Full-Task)\n\n"
+            f"YOLO HTTP-MJPEG Tracker v{__version__}\n\n"
             "Backend is selected automatically from the model file:\n"
             "  *.pt                → PyTorch  (Ultralytics auto-device)\n"
             "  *.engine            → TensorRT \n"
