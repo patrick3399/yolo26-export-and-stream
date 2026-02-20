@@ -215,6 +215,12 @@ del _a, _b, _c  # clean up loop variables from module namespace
 # the reconnect logic instead of blocking the thread indefinitely.
 _CAP_READ_TIMEOUT = 5.0
 
+# Maximum number of zombie OpenCV threads (stuck cap.read / cap.release)
+# allowed before forcing a process exit.  When this threshold is crossed
+# the process calls os._exit(1) so that an external supervisor (systemd,
+# Docker, etc.) can restart it in a clean state.
+_MAX_ZOMBIE_THREADS = 20
+
 # ── Segmentation mask colour palette (BGR, 20 distinct colours cycling by class)
 SEG_PALETTE = [
     (  0, 200, 255), (  0, 255, 100), (255, 100,  50), (200,   0, 255),
@@ -541,6 +547,23 @@ class RTSPStreamLoader:
         """Background thread: continuously read frames and keep queue fresh."""
         while not self.stop_event.is_set():
             if not self.connected:
+                # Guard against unbounded zombie thread accumulation.
+                # Each failed reconnect can leave behind a stuck cap.read()
+                # or cap.release() daemon thread.  If enough pile up, force
+                # a process exit so an external supervisor can restart clean.
+                _zombie_names = {"cap-release", "rtsp-read", "cap-release-stop"}
+                _zombie_count = sum(
+                    1 for t in threading.enumerate()
+                    if t.name in _zombie_names and t.is_alive()
+                )
+                if _zombie_count >= _MAX_ZOMBIE_THREADS:
+                    print(
+                        f"\n❌ FATAL: {_zombie_count} zombie OpenCV threads "
+                        f"detected (limit: {_MAX_ZOMBIE_THREADS}).\n"
+                        f"   Forcing process exit to prevent resource exhaustion.\n"
+                        f"   Use a process supervisor (systemd/Docker) to restart."
+                    )
+                    os._exit(1)
                 time.sleep(self.reconnect_delay)
                 try:
                     self._open_capture()
@@ -611,6 +634,13 @@ class RTSPStreamLoader:
 
 class StreamingHandler(BaseHTTPRequestHandler):
     """Serves the MJPEG stream, the HTML viewer page, and JSON stats."""
+
+    def setup(self):
+        super().setup()
+        # Prevent wfile.write() from blocking indefinitely when a client
+        # disconnects without sending TCP RST/FIN.  Without this timeout
+        # the handler thread would hang forever once the send buffer fills.
+        self.request.settimeout(10)
 
     def do_GET(self):
         if self.path == "/":
@@ -716,7 +746,8 @@ class StreamingHandler(BaseHTTPRequestHandler):
             while self.server.tracker.running:
                 jpeg, version = self.server.tracker.get_jpeg()
                 if jpeg is None or version == last_sent_version:
-                    time.sleep(0.005)
+                    with self.server.tracker._jpeg_condition:
+                        self.server.tracker._jpeg_condition.wait(timeout=0.5)
                     continue
                 last_sent_version = version
                 try:
@@ -836,6 +867,14 @@ class YOLOTracker:
         # the network at socket speed rather than at inference speed).
         self._jpeg_version: int = 0
 
+        # Notification primitives (replace busy-wait polling).
+        # _frame_event:    signalled by process_loop when a new frame is ready
+        #                  for the encoding thread.
+        # _jpeg_condition: signalled by the encoding thread when a new JPEG
+        #                  is ready for HTTP streaming clients.
+        self._frame_event = threading.Event()
+        self._jpeg_condition = threading.Condition()
+
         self._start_encoding_thread()
 
     # ── Thread-safe running property backed by threading.Event ────────────
@@ -849,6 +888,13 @@ class YOLOTracker:
             self._stop_event.clear()
         else:
             self._stop_event.set()
+            # Wake up threads waiting on frame/jpeg notifications so they
+            # can observe the stop flag and exit promptly.
+            if hasattr(self, '_frame_event'):
+                self._frame_event.set()
+            if hasattr(self, '_jpeg_condition'):
+                with self._jpeg_condition:
+                    self._jpeg_condition.notify_all()
 
     # ──────────────────────────────────────────────────────────────────────────
     def _print_diagnostic(self):
@@ -967,7 +1013,8 @@ class YOLOTracker:
                         frame = self.latest_frame.copy()
                         last_encoded_version = current_version
                 if frame is None:
-                    time.sleep(0.01)
+                    self._frame_event.wait(timeout=1.0)
+                    self._frame_event.clear()
                     continue
                 t0 = time.time()
                 ok, buf = cv2.imencode(
@@ -979,6 +1026,8 @@ class YOLOTracker:
                     with self.frame_lock:
                         self.latest_jpeg = buf.tobytes()
                         self._jpeg_version += 1
+                    with self._jpeg_condition:
+                        self._jpeg_condition.notify_all()
 
         self.encode_thread = threading.Thread(target=_loop, daemon=True)
         self.encode_thread.start()
@@ -1411,6 +1460,7 @@ class YOLOTracker:
                 with self.frame_lock:
                     self.latest_frame = annotated
                     self._frame_version += 1
+                self._frame_event.set()
 
                 self.monitor.record("total", (time.time() - loop_t0) * 1000.0)
 
@@ -1445,6 +1495,7 @@ class YOLOTracker:
                 except Exception:
                     pass
             self.stop_encode_event.set()
+            self._frame_event.set()   # wake encoding thread to see stop flag
             if self.encode_thread and self.encode_thread.is_alive():
                 self.encode_thread.join(timeout=2.0)
             self.monitor.print_report()
