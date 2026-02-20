@@ -73,7 +73,7 @@ import numpy as np
 import torch
 from ultralytics import YOLO
 
-__version__ = '1.1.0'
+__version__ = '1.2.0'
 
 # ────────────────────────────────────────────────────────────────────────────
 # Model-format detection
