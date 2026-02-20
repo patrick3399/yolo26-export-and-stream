@@ -11,7 +11,7 @@ Overview:
         Pose Estimation       — 17-keypoint skeleton with colour-coded limbs
         Segmentation          — per-instance colour masks + corner-box overlay
 
-Backend selection (unchanged from v1.0.0):
+Backend selection:
     The inference backend is determined automatically from the model path:
         *.pt / *.pth / *.yaml   → PyTorch  (Ultralytics auto-device)
         *.engine                → TensorRT (CUDA required)
@@ -19,7 +19,7 @@ Backend selection (unchanged from v1.0.0):
         *.mlpackage / *.mlmodel → CoreML   (macOS only)
         *.onnx                  → ONNX Runtime
 
-Task detection (v1.1.0):
+Task detection:
     Task is inferred from the model filename suffix, then confirmed from
     the loaded model's own .task attribute:
         filename contains '-pose'   → pose
@@ -415,8 +415,8 @@ class RTSPStreamLoader:
     def _open_capture(self):
         """Try each backend in order; raise RuntimeError if all fail.
 
-        L2 fix: release the old cap *before* opening a new one.
-        --------------------------------------------------------
+        The previous cap is released asynchronously before the new one opens.
+        ----------------------------------------------------------------------
         Any daemon thread currently blocked inside C++ ``cap.read()`` holds a
         reference to the previous VideoCapture object.  Calling
         ``cap.release()`` on the old object closes the underlying socket /
@@ -496,10 +496,11 @@ class RTSPStreamLoader:
             entirely, making this thread-based fallback unnecessary.
 
         L2 (cap.release in _open_capture):
-            Before creating a replacement VideoCapture, _open_capture() calls
-            ``self.cap.release()`` on the old object.  That closes the
-            underlying socket, which causes a hung C++ ``cap.read()`` to
-            return an error, letting the zombie thread exit naturally.
+            Before creating a replacement VideoCapture, _open_capture()
+            asynchronously releases the old object via a daemon thread.
+            That closes the underlying socket, which causes a hung C++
+            ``cap.read()`` to return an error, letting the zombie thread
+            exit naturally.
 
         L3 (one-thread-per-cap, implemented here):
             ``self._pending_read_thread`` records the current daemon thread.
