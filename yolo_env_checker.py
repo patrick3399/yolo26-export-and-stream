@@ -18,7 +18,7 @@ What it does:
     - Provides an interactive menu to select task, model size, format, and precision
     - Exports the chosen model with the recommended parameters
 
-Supported tasks (v1.1.0):
+Supported tasks:
     Detection / Tracking  — yolo26n/s/m/l/x.pt
     Pose Estimation       — yolo26n/s/m/l/x-pose.pt
     Segmentation          — yolo26n/s/m/l/x-seg.pt
@@ -46,6 +46,7 @@ warnings.filterwarnings("ignore", message=".*scikit-learn.*")
 warnings.filterwarnings("ignore", message=".*openvino.runtime.*")
 os.environ['PYTHONWARNINGS'] = 'ignore'
 
+__version__ = '1.1.0'
 
 # ============================================================================
 # Export parameter defaults  (edit these to customise export behaviour)
@@ -94,7 +95,7 @@ VIRTUAL_GPU_KEYWORDS = [
 
 
 class YOLOEnvChecker:
-    """YOLO Environment Checker & Model Export Tool  v1.1.0"""
+    """YOLO Environment Checker & Model Export Tool"""
 
     def __init__(self):
         self.env_info = {
@@ -1611,7 +1612,7 @@ class YOLOEnvChecker:
         on the command line.  Pass ``--auto`` to skip every prompt silently.
         """
         print('\n' + '='*70)
-        print('  🔥 YOLO Environment Checker & Model Export Tool  v1.1.0')
+        print(f'  🔥 YOLO Environment Checker & Model Export Tool  v{__version__}')
         print('='*70)
         self.detect_all()
         self.show_environment()
@@ -1692,7 +1693,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog='yolo_env_checker',
         description=(
-            'YOLO Environment Checker & Model Export Tool  v1.1.0\n\n'
+            f'YOLO Environment Checker & Model Export Tool  v{__version__}\n\n'
             'Without arguments the tool runs interactively.\n'
             'Supply --auto (or individual flags) for non-interactive / CI use.\n\n'
             'Examples:\n'

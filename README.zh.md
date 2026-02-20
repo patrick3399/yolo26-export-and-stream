@@ -183,14 +183,14 @@ pip install ultralytics opencv-python-headless
 #### Linux — NVIDIA GPU（CUDA）
 
 ```bash
-pip install torch torchvision torchaudio
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
 pip install ultralytics
 ```
 
 #### Linux — NVIDIA GPU + TensorRT
 
 ```bash
-pip install torch torchvision torchaudio
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
 pip install ultralytics tensorrt
 ```
 

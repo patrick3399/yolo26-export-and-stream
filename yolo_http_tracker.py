@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-YOLO HTTP-MJPEG Tracker  v1.1.0  (Model-Driven Backend + Full-Task Edition)
+YOLO HTTP-MJPEG Tracker  (Model-Driven Backend + Full-Task Edition)
 
 Overview:
     Step 2 in the two-tool pipeline.
@@ -11,7 +11,7 @@ Overview:
         Pose Estimation       — 17-keypoint skeleton with colour-coded limbs
         Segmentation          — per-instance colour masks + corner-box overlay
 
-Backend selection (unchanged from v1.0.0):
+Backend selection:
     The inference backend is determined automatically from the model path:
         *.pt / *.pth / *.yaml   → PyTorch  (Ultralytics auto-device)
         *.engine                → TensorRT (CUDA required)
@@ -19,7 +19,7 @@ Backend selection (unchanged from v1.0.0):
         *.mlpackage / *.mlmodel → CoreML   (macOS only)
         *.onnx                  → ONNX Runtime
 
-Task detection (v1.1.0):
+Task detection:
     Task is inferred from the model filename suffix, then confirmed from
     the loaded model's own .task attribute:
         filename contains '-pose'   → pose
@@ -72,6 +72,8 @@ import cv2
 import numpy as np
 import torch
 from ultralytics import YOLO
+
+__version__ = '1.1.0'
 
 # ────────────────────────────────────────────────────────────────────────────
 # Model-format detection
@@ -340,7 +342,7 @@ class PerformanceMonitor:
     def print_report(self):
         s = self.get_stats()
         print("\n" + "=" * 70)
-        print("📊 PERFORMANCE REPORT (v1.1.0 Full-Task Edition)")
+        print(f"📊 PERFORMANCE REPORT (v{__version__})")
         print("=" * 70)
         print(f"Current FPS : {s['fps']:.1f}")
         print(f"Clients     : {s['client_count']}")
@@ -415,8 +417,8 @@ class RTSPStreamLoader:
     def _open_capture(self):
         """Try each backend in order; raise RuntimeError if all fail.
 
-        L2 fix: release the old cap *before* opening a new one.
-        --------------------------------------------------------
+        The previous cap is released asynchronously before the new one opens.
+        ----------------------------------------------------------------------
         Any daemon thread currently blocked inside C++ ``cap.read()`` holds a
         reference to the previous VideoCapture object.  Calling
         ``cap.release()`` on the old object closes the underlying socket /
@@ -496,10 +498,11 @@ class RTSPStreamLoader:
             entirely, making this thread-based fallback unnecessary.
 
         L2 (cap.release in _open_capture):
-            Before creating a replacement VideoCapture, _open_capture() calls
-            ``self.cap.release()`` on the old object.  That closes the
-            underlying socket, which causes a hung C++ ``cap.read()`` to
-            return an error, letting the zombie thread exit naturally.
+            Before creating a replacement VideoCapture, _open_capture()
+            asynchronously releases the old object via a daemon thread.
+            That closes the underlying socket, which causes a hung C++
+            ``cap.read()`` to return an error, letting the zombie thread
+            exit naturally.
 
         L3 (one-thread-per-cap, implemented here):
             ``self._pending_read_thread`` records the current daemon thread.
@@ -666,7 +669,7 @@ class StreamingHandler(BaseHTTPRequestHandler):
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>YOLO Tracker v1.1.0</title>
+  <title>YOLO Tracker v{__version__}</title>
   <style>
     body {{ margin:0; background:#000; color:#fff; font-family:Arial,sans-serif; }}
     .info {{
@@ -899,7 +902,7 @@ class YOLOTracker:
     # ──────────────────────────────────────────────────────────────────────────
     def _print_diagnostic(self):
         print("\n" + "=" * 70)
-        print("🔍 SYSTEM DIAGNOSTIC (v1.1.0 Model-Driven Backend + Full-Task)")
+        print(f"🔍 SYSTEM DIAGNOSTIC (v{__version__})")
         print("=" * 70)
         print(f"Python     : {sys.version.split()[0]}")
         print(f"PyTorch    : {torch.__version__}")
@@ -1377,7 +1380,7 @@ class YOLOTracker:
         and the process to terminate cleanly.
         """
         print("\n" + "=" * 70)
-        print(f"✔ YOLO processing started  [{self.task_label}]  (v1.1.0)")
+        print(f"✔ YOLO processing started  [{self.task_label}]  (v{__version__})")
         print("=" * 70)
         print("Press Ctrl+C to stop and view performance report\n")
 
@@ -1548,7 +1551,7 @@ class YOLOTracker:
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "YOLO HTTP-MJPEG Tracker v1.1.0 (Model-Driven Backend + Full-Task)\n\n"
+            f"YOLO HTTP-MJPEG Tracker v{__version__}\n\n"
             "Backend is selected automatically from the model file:\n"
             "  *.pt                → PyTorch  (Ultralytics auto-device)\n"
             "  *.engine            → TensorRT \n"
