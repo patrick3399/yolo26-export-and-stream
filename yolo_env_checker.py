@@ -166,7 +166,7 @@ class YOLOEnvChecker:
                 cmd, shell=shell, stderr=subprocess.DEVNULL,
                 timeout=timeout, env=env
             )
-            return out.decode(errors='ignore').strip()
+            return out.decode(errors='replace').strip()
         except Exception:
             return ''
 
@@ -554,7 +554,7 @@ class YOLOEnvChecker:
                         ['powershell', '-NoProfile', '-Command',
                          'Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name'],
                         stderr=subprocess.STDOUT, creationflags=flags, timeout=10
-                    ).decode(errors='ignore')
+                    ).decode(errors='replace')
                     gpus = [ln.strip() for ln in raw.replace('\r\n', '\n').split('\n') if ln.strip()]
                     result['method'] = 'PowerShell Win32_VideoController'
                 except Exception:
@@ -565,7 +565,7 @@ class YOLOEnvChecker:
                         raw = subprocess.check_output(
                             ['wmic', 'path', 'Win32_VideoController', 'get', 'Name', '/value'],
                             stderr=subprocess.DEVNULL, creationflags=flags, timeout=10
-                        ).decode(errors='ignore')
+                        ).decode(errors='replace')
                         gpus = [ln.split('=', 1)[1].strip()
                                 for ln in raw.replace('\r\n', '\n').split('\n')
                                 if ln.startswith('Name=')]
@@ -586,7 +586,7 @@ class YOLOEnvChecker:
                 try:
                     raw = subprocess.check_output(
                         ['lspci'], stderr=subprocess.DEVNULL, timeout=5
-                    ).decode(errors='ignore')
+                    ).decode(errors='replace')
                     gpus = []
                     for line in raw.split('\n'):
                         if any(k in line.upper() for k in ('VGA', '3D CONTROLLER', 'DISPLAY CONTROLLER')):
@@ -1572,10 +1572,10 @@ class YOLOEnvChecker:
                 import shutil
                 if os.path.isdir(out_str):
                     if os.path.exists(expected): shutil.rmtree(expected)
-                    os.rename(out_str, expected)
+                    shutil.move(out_str, expected)
                 else:
                     if os.path.exists(expected): os.remove(expected)
-                    os.rename(out_str, expected)
+                    shutil.move(out_str, expected)
                 out = expected
             print(f"\n{'='*70}")
             print(f'✅ Export successful! (elapsed {elapsed:.1f}s)')
