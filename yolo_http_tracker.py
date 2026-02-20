@@ -92,12 +92,10 @@ def detect_model_format(model_path: str) -> str:
         'unknown'   — anything else (let Ultralytics decide)
     """
     p = str(model_path).rstrip("/\\")
-
-    # Directory path → OpenVINO
-    if os.path.isdir(p):
-        return "openvino"
-
     lower = p.lower()
+
+    # Check known extensions first — .mlpackage is a directory bundle on macOS,
+    # so extension matching must happen before the isdir() fallback.
     if lower.endswith(".pt") or lower.endswith(".pth") or lower.endswith(".yaml"):
         return "pytorch"
     if lower.endswith(".engine"):
@@ -106,8 +104,9 @@ def detect_model_format(model_path: str) -> str:
         return "onnx"
     if lower.endswith(".mlpackage") or lower.endswith(".mlmodel"):
         return "coreml"
-    # String-pattern fallback for OpenVINO folder specified before it exists on disk
-    if "_openvino_model" in lower:
+
+    # Directory path → OpenVINO (covers both existing folders and string patterns)
+    if os.path.isdir(p) or "_openvino_model" in lower:
         return "openvino"
 
     return "unknown"
