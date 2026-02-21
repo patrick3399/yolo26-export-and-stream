@@ -103,6 +103,8 @@ python yolo_http_tracker.py \
 | 軌跡線 | 逐物件淡出路徑（`--trajectory`），三種任務皆支援 |
 | 追蹤 ID 標籤 | `--show-id` 顯示 `#id 類別 信心值%` |
 | 獨立 JPEG 編碼執行緒 | 專用執行緒，編碼不阻塞推理 |
+| 繪製/推理流水線重疊 | 繪製在背景執行緒中執行，同時推理下一幀，多核系統吞吐量提升 |
+| 自適應 JPEG 品質 | `--adaptive-quality` 高負載時自動降低編碼品質，空閒時自動恢復 |
 | 主動丟幀機制 | 過舊幀在推理前丟棄，並計入丟幀計數器 |
 | 感知 OS 的 RTSP 後端 | Windows：FFMPEG/MSMF/DSHOW；Linux：FFMPEG/GStreamer/V4L2 |
 | 自動重連 | 串流中斷後無縫恢復 |
@@ -387,6 +389,7 @@ python yolo_http_tracker.py --input <來源> --model <模型路徑> [選項]
 | `--trajectory` | 關閉 | 繪製移動軌跡線 |
 | `--trajectory-length` | `30` | 每個物件的最大軌跡歷史點數 |
 | `--quality` | `60` | JPEG 編碼品質（0–100） |
+| `--adaptive-quality` | 關閉 | 依編碼負載自動調整 JPEG 品質；高負載時降低品質，空閒時恢復 |
 | `--classes` | *（全部）* | 過濾類別名稱，如 `--classes person car` |
 | `--pose-kp-conf` | `0.3` | 姿勢估計的關節點信心值門檻；低於此值的關節點不予繪製 |
 
