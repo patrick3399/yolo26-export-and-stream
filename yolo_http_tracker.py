@@ -668,15 +668,16 @@ class StreamingHandler(BaseHTTPRequestHandler):
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>YOLO Tracker v{__version__}</title>
   <style>
     *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
     html, body {{
-      width: 100%; height: 100vh;
+      width: 100%; height: 100vh; height: 100dvh;
       background: #000; color: #fff;
       font-family: Arial, sans-serif;
       display: flex; overflow: hidden;
+      touch-action: manipulation;
     }}
     /* ── Stream area: fills all remaining space, keeps aspect ratio ── */
     #stream-wrap {{
@@ -687,18 +688,19 @@ class StreamingHandler(BaseHTTPRequestHandler):
       justify-content: center;
       background: #000;
       overflow: hidden;
+      touch-action: none;
     }}
     #stream-wrap img {{
       display: block;
       max-width: 100%;
-      max-height: 100vh;
+      max-height: 100vh; max-height: 100dvh;
       width: auto; height: auto;
       object-fit: contain;
     }}
     /* ── Sidebar ── */
     #sidebar {{
-      width: 190px;
-      min-width: 190px;
+      width: clamp(170px, 15vw, 240px);
+      min-width: 170px;
       background: #111827;
       border-left: 1px solid #2d3748;
       padding: 14px 12px;
@@ -722,24 +724,41 @@ class StreamingHandler(BaseHTTPRequestHandler):
     .fmt {{ color: #7dd3fc; }}
     .task {{ color: #fbbf24; }}
     hr.sep {{ border: none; border-top: 1px solid #2d3748; margin: 10px 0; }}
-    /* ── Mobile: sidebar slides in as an overlay ── */
+    /* ── Sidebar backdrop (mobile overlay) ── */
+    #sidebar-backdrop {{
+      display: none;
+      position: fixed; inset: 0; z-index: 99;
+      background: rgba(0,0,0,.5);
+    }}
+    /* ── Toggle button ── */
     #tog {{
       display: none;
       position: fixed; top: 8px; right: 8px; z-index: 200;
       background: rgba(0,0,0,.75); color: #fff;
-      border: 1px solid #555; border-radius: 4px;
-      padding: 4px 9px; cursor: pointer; font-size: 13px;
+      border: 1px solid #555; border-radius: 6px;
+      min-width: 44px; min-height: 44px;
+      padding: 6px 12px; cursor: pointer; font-size: 18px;
+      -webkit-tap-highlight-color: transparent;
     }}
+    /* ── Tablet: narrower sidebar ── */
+    @media (max-width: 900px) {{
+      #sidebar {{ width: 170px; min-width: 170px; font-size: 12px; }}
+      #sidebar h2 {{ font-size: 12px; }}
+      .fps {{ font-size: 20px; }}
+    }}
+    /* ── Mobile: sidebar slides in as an overlay ── */
     @media (max-width: 600px) {{
-      #tog {{ display: block; }}
+      #tog {{ display: flex; align-items: center; justify-content: center; }}
       #sidebar {{
         position: fixed; right: 0; top: 0; bottom: 0;
+        width: 200px;
         transform: translateX(110%);
         transition: transform .2s ease;
         z-index: 100;
         box-shadow: -2px 0 8px rgba(0,0,0,.6);
       }}
       #sidebar.open {{ transform: translateX(0); }}
+      #sidebar.open ~ #sidebar-backdrop {{ display: block; }}
     }}
   </style>
 </head>
@@ -748,7 +767,7 @@ class StreamingHandler(BaseHTTPRequestHandler):
     <img src="/stream" alt="YOLO stream">
   </div>
 
-  <button id="tog" onclick="document.getElementById('sidebar').classList.toggle('open')">&#9776;</button>
+  <button id="tog" aria-label="Toggle sidebar">&#9776;</button>
 
   <div id="sidebar">
     <h2>YOLO Tracker v{__version__}</h2>
@@ -767,7 +786,10 @@ class StreamingHandler(BaseHTTPRequestHandler):
     <div class="row"><div class="lbl">Clients</div><div id="cli-v" class="val">{stats['client_count']}</div></div>
   </div>
 
+  <div id="sidebar-backdrop"></div>
+
   <script>
+    /* ── Stats refresh ── */
     function refresh() {{
       fetch('/stats').then(r=>r.json()).then(d=>{{
         document.getElementById('fps-v').textContent  = d.fps.toFixed(1);
@@ -778,6 +800,26 @@ class StreamingHandler(BaseHTTPRequestHandler):
     }}
     setInterval(refresh, 2000);
     window.onload = refresh;
+
+    /* ── Mobile sidebar toggle + click-outside-to-close ── */
+    (function() {{
+      var sb = document.getElementById('sidebar');
+      var tog = document.getElementById('tog');
+      var bd = document.getElementById('sidebar-backdrop');
+      function closeSidebar() {{ sb.classList.remove('open'); }}
+      tog.addEventListener('click', function() {{ sb.classList.toggle('open'); }});
+      bd.addEventListener('click', closeSidebar);
+    }})();
+
+    /* ── Visual Viewport resize handler (mobile address bar / zoom) ── */
+    if (window.visualViewport) {{
+      var vv = window.visualViewport;
+      var onVVResize = function() {{
+        document.documentElement.style.setProperty('--vvh', vv.height + 'px');
+      }};
+      vv.addEventListener('resize', onVVResize);
+      onVVResize();
+    }}
   </script>
 </body>
 </html>"""
