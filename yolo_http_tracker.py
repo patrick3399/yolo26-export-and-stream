@@ -668,18 +668,105 @@ class StreamingHandler(BaseHTTPRequestHandler):
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>YOLO Tracker v{__version__}</title>
   <style>
-    body {{ margin:0; background:#000; color:#fff; font-family:Arial,sans-serif; }}
-    .info {{
-      position:absolute; top:10px; left:10px;
-      background:rgba(0,0,0,.65); padding:10px 14px;
-      border-radius:6px; font-size:14px; line-height:1.7;
+    *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    html, body {{
+      width: 100%; height: 100vh;
+      background: #000; color: #fff;
+      font-family: Arial, sans-serif;
+      display: flex; overflow: hidden;
     }}
-    .fps {{ color:#00ff88; font-weight:bold; }}
-    .fmt {{ color:#7dd3fc; }}
-    .task {{ color:#fbbf24; }}
+    /* ── Stream area: fills all remaining space, keeps aspect ratio ── */
+    #stream-wrap {{
+      flex: 1 1 0;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #000;
+      overflow: hidden;
+    }}
+    #stream-wrap img {{
+      display: block;
+      max-width: 100%;
+      max-height: 100vh;
+      width: auto; height: auto;
+      object-fit: contain;
+    }}
+    /* ── Sidebar ── */
+    #sidebar {{
+      width: 190px;
+      min-width: 190px;
+      background: #111827;
+      border-left: 1px solid #2d3748;
+      padding: 14px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      overflow-y: auto;
+      font-size: 13px;
+    }}
+    #sidebar h2 {{
+      font-size: 13px; font-weight: bold;
+      color: #7dd3fc; letter-spacing: .3px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #2d3748;
+      margin-bottom: 10px;
+    }}
+    .row {{ margin-bottom: 8px; }}
+    .lbl {{ color: #6b7280; font-size: 10px; text-transform: uppercase; letter-spacing: .6px; }}
+    .val {{ color: #e5e7eb; margin-top: 1px; word-break: break-all; }}
+    .fps {{ color: #00ff88; font-weight: bold; font-size: 22px; line-height: 1.1; }}
+    .fmt {{ color: #7dd3fc; }}
+    .task {{ color: #fbbf24; }}
+    hr.sep {{ border: none; border-top: 1px solid #2d3748; margin: 10px 0; }}
+    /* ── Mobile: sidebar slides in as an overlay ── */
+    #tog {{
+      display: none;
+      position: fixed; top: 8px; right: 8px; z-index: 200;
+      background: rgba(0,0,0,.75); color: #fff;
+      border: 1px solid #555; border-radius: 4px;
+      padding: 4px 9px; cursor: pointer; font-size: 13px;
+    }}
+    @media (max-width: 600px) {{
+      #tog {{ display: block; }}
+      #sidebar {{
+        position: fixed; right: 0; top: 0; bottom: 0;
+        transform: translateX(110%);
+        transition: transform .2s ease;
+        z-index: 100;
+        box-shadow: -2px 0 8px rgba(0,0,0,.6);
+      }}
+      #sidebar.open {{ transform: translateX(0); }}
+    }}
   </style>
+</head>
+<body>
+  <div id="stream-wrap">
+    <img src="/stream" alt="YOLO stream">
+  </div>
+
+  <button id="tog" onclick="document.getElementById('sidebar').classList.toggle('open')">&#9776;</button>
+
+  <div id="sidebar">
+    <h2>YOLO Tracker v{__version__}</h2>
+
+    <div class="row"><div class="lbl">Model</div><div class="val fmt">{tracker.model_name}</div></div>
+    <div class="row"><div class="lbl">Task</div><div class="val task">{tracker.task_label}</div></div>
+    <div class="row"><div class="lbl">Backend</div><div class="val fmt">{tracker.format_display}</div></div>
+    <div class="row"><div class="lbl">Precision</div><div class="val">{tracker.precision_label}</div></div>
+    <div class="row"><div class="lbl">Device</div><div class="val">{tracker.device_label}</div></div>
+
+    <hr class="sep">
+
+    <div class="row"><div class="lbl">FPS</div><div id="fps-v" class="fps">{stats['fps']:.1f}</div></div>
+    <div class="row"><div class="lbl">Inference</div><div id="inf-v" class="val">{stats['inference']['avg']:.1f} ms</div></div>
+    <div class="row"><div class="lbl">Dropped</div><div id="drop-v" class="val">{stats['dropped_frames']} ({stats['drop_rate']:.1f}%)</div></div>
+    <div class="row"><div class="lbl">Clients</div><div id="cli-v" class="val">{stats['client_count']}</div></div>
+  </div>
+
   <script>
     function refresh() {{
       fetch('/stats').then(r=>r.json()).then(d=>{{
@@ -692,20 +779,6 @@ class StreamingHandler(BaseHTTPRequestHandler):
     setInterval(refresh, 2000);
     window.onload = refresh;
   </script>
-</head>
-<body>
-  <img src="/stream" style="display:block;margin:0 auto;max-width:100%;height:auto;">
-  <div class="info">
-    <div><b>Model:</b> <span class="fmt">{tracker.model_name}</span></div>
-    <div><b>Task:</b> <span class="task">{tracker.task_label}</span></div>
-    <div><b>Backend:</b> <span class="fmt">{tracker.format_display}</span></div>
-    <div><b>Precision:</b> {tracker.precision_label}</div>
-    <div><b>Device:</b> {tracker.device_label}</div>
-    <div><b>FPS:</b> <span id="fps-v" class="fps">{stats['fps']:.1f}</span></div>
-    <div><b>Inference:</b> <span id="inf-v">{stats['inference']['avg']:.1f} ms</span></div>
-    <div><b>Dropped:</b> <span id="drop-v">{stats['dropped_frames']} ({stats['drop_rate']:.1f}%)</span></div>
-    <div><b>Clients:</b> <span id="cli-v">{stats['client_count']}</span></div>
-  </div>
 </body>
 </html>"""
         self.wfile.write(html.encode("utf-8"))
