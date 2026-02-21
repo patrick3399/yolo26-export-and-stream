@@ -104,6 +104,8 @@ python yolo_http_tracker.py \
 | Trajectory trails | Fading per-object paths (`--trajectory`) — works across all tasks |
 | Tracking ID labels | Show `#id class conf%` overlays (`--show-id`) |
 | Independent JPEG encoder | Dedicated thread — encoding never blocks inference |
+| Draw/inference pipeline overlap | Drawing runs in a background thread while the next frame is being inferred, improving throughput on multi-core systems |
+| Adaptive JPEG quality | `--adaptive-quality` auto-lowers encoding quality under load and recovers when headroom returns |
 | Active frame dropping | Stale frames discarded before inference; drop counter tracked |
 | OS-aware RTSP backends | Windows: FFMPEG/MSMF/DSHOW; Linux: FFMPEG/GStreamer/V4L2 |
 | Auto-reconnect | Seamless stream recovery on network interruption |
@@ -394,6 +396,7 @@ python yolo_http_tracker.py --input <source> --model <model_path> [options]
 | `--trajectory` | off | Draw movement trails |
 | `--trajectory-length` | `30` | Max history points per object |
 | `--quality` | `60` | JPEG encoding quality (0–100) |
+| `--adaptive-quality` | off | Auto-adjust JPEG quality based on encoding load; reduces quality under pressure, recovers when idle |
 | `--classes` | *(all)* | Filter class names, e.g. `--classes person car` |
 | `--pose-kp-conf` | `0.3` | Keypoint confidence threshold for pose estimation; keypoints below this value are not drawn |
 
