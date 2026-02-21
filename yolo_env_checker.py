@@ -46,7 +46,7 @@ warnings.filterwarnings("ignore", message=".*scikit-learn.*")
 warnings.filterwarnings("ignore", message=".*openvino.runtime.*")
 os.environ['PYTHONWARNINGS'] = 'ignore'
 
-__version__ = '1.2.0'
+__version__ = '1.2.1'
 
 # ============================================================================
 # Export parameter defaults  (edit these to customise export behaviour)
