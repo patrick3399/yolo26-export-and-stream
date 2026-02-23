@@ -74,7 +74,7 @@ import numpy as np
 import torch
 from ultralytics import YOLO
 
-__version__ = '1.3.0'
+__version__ = '1.3.1'
 
 # ────────────────────────────────────────────────────────────────────────────
 # Model-format detection
@@ -1446,8 +1446,9 @@ class YOLOTracker:
         Draw semi-transparent instance segmentation masks on the frame.
 
         For each detected instance:
-          1. Retrieve the binary mask (already rescaled to input resolution
-             by Ultralytics) and resize it to the original frame dimensions.
+          1. Retrieve the binary mask (at model's letterboxed input resolution
+             from Ultralytics), strip letterbox padding, then resize the
+             content region to the original frame dimensions.
           2. Flood-fill the mask region with a per-class colour at 40 % opacity.
           3. Draw the mask contour outline for a sharper edge.
           4. Draw the corner-box and label on top (same as detection).
@@ -1484,11 +1485,27 @@ class YOLOTracker:
         overlay = img.copy()
         contour_list = []  # collect contours to draw after blending
 
+        # Precompute inverse-letterbox parameters once for all masks.
+        # masks.data is at the model's letterboxed input resolution (e.g. 640×640),
+        # which includes black padding when the frame aspect ratio differs from the
+        # model's square input.  Naively resizing to (w, h) stretches that padding
+        # into the frame, shifting every mask by the pad amount and misaligning it
+        # with boxes.xyxy (which are already de-letterboxed to original frame coords).
+        # The fix: crop the padding strip first, then resize the content-only region.
+        mH, mW     = all_masks_np.shape[1], all_masks_np.shape[2]
+        gain       = min(mH / h, mW / w)          # same ratio Ultralytics uses
+        content_h  = int(h * gain)                 # actual content rows in the mask
+        content_w  = int(w * gain)                 # actual content cols in the mask
+        pad_top    = (mH - content_h) // 2         # letterbox rows to strip at top
+        pad_left   = (mW - content_w) // 2         # letterbox cols to strip at left
+
         for i in range(len(all_masks_np)):
-            mask_np = all_masks_np[i]
-            # Resize mask to frame resolution
-            mask_bin = cv2.resize(mask_np, (w, h),
-                                  interpolation=cv2.INTER_LINEAR) > 0.5
+            mask_np  = all_masks_np[i]
+            # Strip letterbox padding, then resize content to original frame dims.
+            mask_crop = mask_np[pad_top : pad_top + content_h,
+                                pad_left : pad_left + content_w]
+            mask_bin  = cv2.resize(mask_crop, (w, h),
+                                   interpolation=cv2.INTER_LINEAR) > 0.5
 
             # Fix 5: guard against len(masks) > len(boxes)
             cls_id = int(all_box_cls[i]) if (all_box_cls is not None and i < len(all_box_cls)) else i
